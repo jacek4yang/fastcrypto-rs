@@ -4,11 +4,12 @@ Experimental, benchmark-driven cryptography research for HTTPS/TLS workloads,
 written in Rust.
 
 > **Status: experimental research code.**
-> Not audited. Not constant-time verified. **Not** faster than the established
-> libraries it is benchmarked against - the current implementation is a
-> correctness-first portable baseline, and every performance claim in this
-> repository has to be backed by a measurement recorded under
-> `benchmarks/results/`.
+> Not audited. Not constant-time verified. Our SHA-256 now measures within
+> about 1% of ring and aws-lc-rs at 1 KiB and above, and HKDF-SHA256 is
+> within about 30% on the TLS-shaped workload, but none of that is a claim of
+> being faster: those are single-run numbers from a shared container, and
+> this project requires a dedicated machine and a measurement recorded
+> under `benchmarks/results/` before any performance claim.
 
 ## Why
 
@@ -37,7 +38,7 @@ The rules of the project:
 | Workspace, lint gates, quality scripts | done |
 | Portable SHA-256 | done (safe Rust, KAT + differential tested) |
 | Portable HMAC-SHA256 | done (RFC 4231 vectors) |
-| Portable HKDF-SHA256 | done (RFC 5869 vectors) |
+| Portable HKDF-SHA256 | done (RFC 5869 vectors), plus a prepared-key expander for the TLS multi-label shape |
 | x86_64 feature detection (CPUID, cached, no_std) | done, cross-checked against `std::arch` |
 | AArch64 feature detection (feature-gated probe) | done |
 | Benchmark laboratory (Criterion) | done |
@@ -48,6 +49,18 @@ The rules of the project:
 See `PROJECT_STATUS.md` for the current handover note,
 `docs/ROADMAP.md` for what comes next, and `benchmarks/results/`
 for measurements.
+
+## Where the numbers stand (2026-09-03, shared cloud container, AMD EPYC 9K65)
+
+| benchmark | first portable baseline | today | best competitor in the same run |
+|---|---|---|---|
+| SHA-256, 0 B | 282.4 ns | 70.5 ns | aws-lc-rs 61.6 ns |
+| SHA-256, 64 KiB | 225.9 us | 35.9 us | aws-lc-rs 35.9 us |
+| HKDF extract + expand to 88 B | 4346 ns | 922.9 ns | RustCrypto hkdf 657.8 ns |
+| HKDF, four labels from one PRK | 1375 ns (per-label API) | 640.2 ns | RustCrypto hkdf 482.8 ns |
+
+Four optimization steps got there, all recorded with their measurements -
+including two rejected variants - in `benchmarks/results/`.
 
 ## Repository layout
 
