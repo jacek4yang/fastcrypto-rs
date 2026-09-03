@@ -114,7 +114,7 @@ const K: [u64; 80] = [
 ];
 
 /// FIPS 180-4 §5.3.5: square roots of the first eight primes.
-const IV_512: [u64; 8] = [
+pub(crate) const IV_512: [u64; 8] = [
     0x6a09_e667_f3bc_c908,
     0xbb67_ae85_84ca_a73b,
     0x3c6e_f372_fe94_f82b,
@@ -126,7 +126,7 @@ const IV_512: [u64; 8] = [
 ];
 
 /// FIPS 180-4 §5.3.4: square roots of the ninth through sixteenth primes.
-const IV_384: [u64; 8] = [
+pub(crate) const IV_384: [u64; 8] = [
     0xcbbb_9d5d_c105_9ed8,
     0x629a_292a_367c_d507,
     0x9159_015a_3070_dd17,
@@ -455,6 +455,32 @@ impl Sha512Core {
             len: 0,
             block_filled: 0,
         }
+    }
+
+    /// Rebuilds a hasher from a mid-stream state.
+    ///
+    /// `consumed` must be a whole number of blocks, which is what HMAC needs:
+    /// the ipad and opad key blocks are compressed once at construction and
+    /// the resulting states are reused for every message.
+    pub(crate) const fn from_state(state: [u64; 8], consumed: u64) -> Self {
+        debug_assert!(consumed.is_multiple_of(BLOCK_LEN as u64));
+        Self {
+            state,
+            block: [0u8; BLOCK_LEN],
+            block_len: 0,
+            len: consumed,
+            block_filled: 0,
+        }
+    }
+
+    /// Message bytes absorbed since construction, excluding any key prefix.
+    pub(crate) const fn count(&self) -> u64 {
+        self.len
+    }
+
+    /// The current chaining state, for HMAC's key-block reuse.
+    pub(crate) const fn state(&self) -> [u64; 8] {
+        self.state
     }
 
     /// Absorbs more message bytes.
