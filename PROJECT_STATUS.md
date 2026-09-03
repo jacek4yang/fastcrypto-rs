@@ -1,7 +1,8 @@
 # Project status
 
-*Last updated: 2026-09-03. Repository state: Milestone 0 and Milestone 1
-complete, all quality gates green.*
+*Last updated: 2026-09-03. Repository state: Milestones 0 and 1 complete,
+Milestone 2 in progress (portable schedule done, SHA-NI backend done), all
+quality gates green.*
 
 ## What this is
 
@@ -27,9 +28,9 @@ Read this file together with:
 | `fastcrypto-x86` | CPUID feature detection, cached, cross-checked against std |
 | `fastcrypto-aarch64` | feature probe (std-gated), cross-compiles |
 | `fastcrypto` (public API) | safe re-exports + `backend` reporting |
-| `fastcrypto-bench` | Criterion + iai-callgrind harness, differential tests |
+| `fastcrypto-bench` | Criterion + iai-callgrind harness, differential and backend-equivalence tests |
 | `fuzz/` | two cargo-fuzz targets, both run clean |
-| SIMD / instruction backends | not started |
+| SIMD / instruction backends | x86_64 SHA-NI SHA-256: done and selected at runtime |
 
 Quality gates (all passing):
 
@@ -91,67 +92,65 @@ value from the RFC text was then used verbatim. That is the intended workflow.
 
 Full tables in ``benchmarks/results/``. Headline numbers:
 
-* SHA-256 one-shot at 64 KiB: **190.9 us** for us vs **36.0 us** for the
-  SHA-NI-backed implementations (5.3x). At 0 B: 254.6 ns vs 58-79 ns.
-* Portable-vs-portable (RustCrypto forced to its soft backend): ours is
-  **1.27x slower** at 64 KiB - about 10.2 vs 8.1 cycles/byte on the estimated
-  3.69 GHz clock. It was 1.52x before the schedule rework.
-* HKDF-SHA256 extract+expand to 88 bytes: 4346 ns vs 650 ns (RustCrypto) and
-  796 ns (ring).
-* AEAD and X25519 groups contain **reference numbers only**; those primitives
-  are not implemented yet. ChaCha20-Poly1305 seal of an empty record: 222 ns
-  (ring) / 226 ns (aws-lc-rs). X25519 fixed-key: 18.7 us (aws-lc-rs) vs
-  42.0 us (x25519-dalek).
+* SHA-256 one-shot at 64 KiB: **36.1 us** for us, ring **35.9 us**, aws-lc-rs
+  **35.9 us** - a 0.5-0.7% difference, inside the noise of a shared container.
+  At 1 KiB and above the three are indistinguishable in this run; below 256 B we
+  are still clearly behind (0 B: 97.5 ns vs 61.6 ns for aws-lc-rs).
+* SHA-256 improvement today: -62% to -81% versus our own portable code, in two
+  steps (message schedule rework, then SHA-NI).
+* Streaming 64 KiB in 1 KiB updates: 36.3 us vs ring 36.1 us.
+* HKDF-SHA256 extract + expand to 88 bytes: 1369 ns vs RustCrypto hkdf 648 ns,
+  aws-lc-rs 820 ns, ring 831 ns. This is now the weakest primitive.
+* AEAD and X25519 groups are still reference numbers only; those primitives are
+  not implemented yet.
 
 No claim of being faster than any competitor is made anywhere. The current
 implementation is slower at every size.
 
 ## Current bottlenecks, in priority order
 
-1. **No hardware-accelerated path (~5.3x at 64 KiB).** Every competitor in the
-   lab uses Intel SHA Extensions on this CPU. The feature probe already reports
-   `sha=true`, the cached CPUID path exists, and the dispatch seam
-   (`fastcrypto::backend::Backend`) is in place, so this is implementation work,
-   not design work.
-2. **Remaining portable headroom (~1.27x).** Against RustCrypto's soft backend
-   we now run about 10.2 cycles/byte versus 8.1 at 64 KiB (it was 12.3 before
-   the schedule rework). Worth another pass only after the SHA-NI path exists,
-   because that is where the order of magnitude is.
-3. **Fixed per-call cost (254.6 ns for a 0-byte digest).** One compression of a
-   64-byte block dominates; the padding path adds a 128-byte stack scratch plus
-   volatile zeroization. This is the number to attack for handshake-sized
-   inputs once SHA-NI lands.
-4. **Zeroization cost on construction (19.5 ns vs 2.4 ns).** `Sha256` zeroizes on
-   drop (9 words + 64-byte block, volatile writes). Deliberate trade-off; it is
-   now a larger share of small-message cost than before, because the hash got
-   cheaper.
+1. **HKDF-SHA256 dataflow (~2x against RustCrypto hkdf).** Every HMAC in the
+   expand chain rebuilds its ipad/opad key states (two extra compressions each)
+   and every finalize zeroizes a 128-byte padding scratch with volatile writes.
+   A TLS key schedule expands several labels from one PRK, so preparing the HMAC
+   key once and reusing it is the fix. Measured at 1369 ns vs 648 ns for a full
+   extract + expand to 88 bytes.
+2. **Fixed per-call cost on small inputs (0 B: 97.5 ns vs 61.6 ns).** Hasher
+   construction is 26.9 ns against 2.5 ns for RustCrypto: zeroization on drop
+   (9 words plus a 64-byte block of volatile writes). Deliberate trade-off, but
+   it now dominates below 256 bytes, which is the range TLS handshake hashing
+   lives in.
+3. **Remaining portable headroom (~1.27x against RustCrypto soft).** Only worth
+   another pass after the two items above.
+4. **No AArch64 SHA-2 backend yet.** The probe exists; the compression does not.
 
 ## Optimization log
 
 Every optimization attempt is recorded with its measurement, including the ones
 that were reverted:
 
+* `benchmarks/results/2026-09-03-sha256-sha-ni.md` - x86_64 SHA-NI backend:
+  -62% to -81% per size, plus the safe dispatch seam (Compressor) that let
+  the public API stay forbid(unsafe_code).
 * `benchmarks/results/2026-09-03-sha256-message-schedule.md` - portable
   schedule rework: five variants, two rejected (one of them faster on 64 KiB
   but slower on a single block), net -6.2% to -21.6% per size.
 
 ## Next concrete optimization task
 
-**Implement the x86_64 SHA-NI backend.** Ordered steps, each with its own
-commit, tests and benchmark run:
+**Fix the HKDF-SHA256 dataflow.** Ordered steps, each with its own commit, tests
+and benchmark run:
 
-1. Baseline is recorded (this status file plus the results directory).
-2. Add `fastcrypto-x86::sha256` implementing the compression with
-   `sha256msg1`/`sha256msg2`/`sha256rnds2` (plus `pshufd`/`palignr` for the
-   schedule), gated on `Features::cached().sha_ni()`, every `unsafe` block
-   carrying a SAFETY comment and the target-feature invariant.
-3. Wire it into `fastcrypto` dispatch so `Backend::for_sha256()` reports
-   `X86ShaNi` when it is selected, keeping the portable path as the fallback.
-4. Verify: every length in 0..300 and random inputs must produce identical
-   digests from both paths; add that as a differential test, not just a check.
-5. Benchmark the full ladder. Keep only if every size improves; otherwise
-   revert and record why.
-6. Then the AArch64 ARMv8 SHA-2 backend behind the existing probe.
+1. Baseline is recorded (this file and the results directory).
+2. Prepare the HMAC key state once per PRK and reuse it across the expand chain,
+   instead of rebuilding ipad/opad for every block.
+3. Replace the per-finalize volatile zeroization of the 128-byte padding scratch
+   with a memset plus an optimisation barrier, and measure it at 0 B and 64 KiB.
+4. Re-run the KAT, differential and backend-equivalence tests, then the hkdf and
+   sha256 benchmark groups.
+5. Keep only if every size improves; otherwise revert and record why.
+
+After that: the AArch64 ARMv8 SHA-2 backend, then AEAD (ChaCha20-Poly1305).
 
 ## Reproducing everything here
 

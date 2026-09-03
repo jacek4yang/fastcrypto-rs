@@ -112,6 +112,58 @@ const INITIAL_STATE: [u32; 8] = [
     0x5be0_cd19,
 ];
 
+/// A safe handle to a block compression function.
+///
+/// The dispatch seam: the portable backend is the default, and an
+/// architecture-specific backend can be substituted without changing any
+/// user-visible type. It is a plain function pointer, so the call is direct
+/// and there is no dynamic dispatch per block.
+#[derive(Debug, Clone, Copy)]
+pub struct Compressor(pub(crate) fn(&mut [u32; 8], &[u8]));
+
+/// Manual implementation: derived equality on a function pointer compares
+/// addresses, which Rust does not guarantee to be unique, so equality here
+/// means same function value by pointer identity only and is provided for
+/// tests, not for dispatch decisions.
+impl PartialEq for Compressor {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::fn_addr_eq(self.0, other.0)
+    }
+}
+
+impl Eq for Compressor {}
+
+impl Compressor {
+    /// The portable (safe Rust) compression function.
+    pub const PORTABLE: Self = Self(portable_compress_blocks);
+
+    /// Wraps a compression function. It must process any number of whole
+    /// 64-byte blocks and leave a partial tail untouched.
+    #[must_use]
+    pub const fn new(f: fn(&mut [u32; 8], &[u8])) -> Self {
+        Self(f)
+    }
+
+    /// Compresses whole blocks into the chaining state.
+    pub(crate) fn run(&self, state: &mut [u32; 8], blocks: &[u8]) {
+        debug_assert_eq!(blocks.len() % BLOCK_LEN, 0);
+        (self.0)(state, blocks);
+    }
+}
+
+/// Portable SHA-256 compression over any number of whole blocks.
+///
+/// Panics never; a non-multiple of 64 is a programming error and is caught by
+/// a debug assertion.
+pub fn portable_compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
+    debug_assert_eq!(blocks.len() % BLOCK_LEN, 0);
+    for block in blocks.chunks_exact(BLOCK_LEN) {
+        let mut b = [0u8; BLOCK_LEN];
+        b.copy_from_slice(block);
+        compress(state, &b);
+    }
+}
+
 /// Incremental SHA-256 hasher.
 ///
 /// # Example
@@ -131,6 +183,8 @@ pub struct Sha256 {
     block_len: usize,
     /// Total number of bytes absorbed so far.
     len: u64,
+    /// Backend selected for this instance.
+    compressor: Compressor,
 }
 
 impl Default for Sha256 {
@@ -169,11 +223,18 @@ impl Sha256 {
     /// Creates a fresh hasher with the FIPS 180-4 initial state.
     #[must_use]
     pub const fn new() -> Self {
+        Self::with_compressor(Compressor::PORTABLE)
+    }
+
+    /// Creates a hasher that uses the given compression backend.
+    #[must_use]
+    pub const fn with_compressor(compressor: Compressor) -> Self {
         Self {
             state: INITIAL_STATE,
             block: [0u8; BLOCK_LEN],
             block_len: 0,
             len: 0,
+            compressor,
         }
     }
 
@@ -183,13 +244,14 @@ impl Sha256 {
     /// block. `consumed` is the number of bytes already absorbed into `state`
     /// and must be a multiple of `BLOCK_LEN`.
     #[must_use]
-    pub(crate) const fn from_state(state: [u32; 8], consumed: u64) -> Self {
+    pub(crate) const fn from_state(state: [u32; 8], consumed: u64, compressor: Compressor) -> Self {
         debug_assert!(consumed.is_multiple_of(BLOCK_LEN as u64));
         Self {
             state,
             block: [0u8; BLOCK_LEN],
             block_len: 0,
             len: consumed,
+            compressor,
         }
     }
 
@@ -212,21 +274,19 @@ impl Sha256 {
                 return;
             }
             let block = self.block;
-            compress(&mut self.state, &block);
+            self.compressor.run(&mut self.state, &block);
             self.block_len = 0;
         }
 
-        let mut chunks = data.chunks_exact(BLOCK_LEN);
-        for chunk in &mut chunks {
-            // Copying into a fixed-size array hands the optimiser a known-size,
-            // known-alignment value; the copy folds into the message-schedule
-            // loads.
-            let mut block = [0u8; BLOCK_LEN];
-            block.copy_from_slice(chunk);
-            compress(&mut self.state, &block);
+        // Hand every whole block to the backend in one call: the backend
+        // loops internally, which is what lets an accelerated backend
+        // amortise its own setup over the whole input.
+        let whole = data.len() - data.len() % BLOCK_LEN;
+        if whole > 0 {
+            self.compressor.run(&mut self.state, &data[..whole]);
         }
 
-        let tail = chunks.remainder();
+        let tail = &data[whole..];
         if !tail.is_empty() {
             self.block[..tail.len()].copy_from_slice(tail);
             self.block_len = tail.len();
@@ -261,11 +321,8 @@ impl Sha256 {
         scratch[len_at..len_at + 8].copy_from_slice(&bit_len.to_be_bytes());
 
         let mut state = self.state;
-        for block in scratch[..blocks * BLOCK_LEN].chunks_exact(BLOCK_LEN) {
-            let mut b = [0u8; BLOCK_LEN];
-            b.copy_from_slice(block);
-            compress(&mut state, &b);
-        }
+        self.compressor
+            .run(&mut state, &scratch[..blocks * BLOCK_LEN]);
         scratch.zeroize();
         for (i, word) in state.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());

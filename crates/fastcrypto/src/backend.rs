@@ -20,12 +20,16 @@ pub enum Backend {
 }
 
 impl Backend {
-    /// Backend that SHA-256 currently dispatches to on this machine.
+    /// Backend that SHA-256 dispatches to on this machine.
     ///
-    /// Until the SHA-NI backend lands this is always `Backend::Portable`;
-    /// callers should not branch on it for correctness, only for reporting.
+    /// Reporting only: callers must not branch on it for correctness, and
+    /// every backend produces identical digests.
     #[must_use]
-    pub const fn for_sha256() -> Self {
+    pub fn for_sha256() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        if fastcrypto_x86::has_sha_ni() {
+            return Self::X86ShaNi;
+        }
         Self::Portable
     }
 
@@ -85,9 +89,12 @@ mod tests {
     }
 
     #[test]
-    fn sha256_reports_a_backend() {
-        assert_eq!(Backend::for_sha256(), Backend::Portable);
-        // Just check it does not panic; the value is machine dependent.
-        let _ = Backend::sha256_hardware_support();
+    fn sha256_backend_matches_hardware() {
+        let backend = Backend::for_sha256();
+        if Backend::sha256_hardware_support() {
+            assert_ne!(backend, Backend::Portable);
+        } else {
+            assert_eq!(backend, Backend::Portable);
+        }
     }
 }

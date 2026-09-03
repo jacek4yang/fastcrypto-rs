@@ -7,6 +7,7 @@
 use zeroize::Zeroize;
 
 use crate::hmac::HmacSha256;
+use crate::sha256::Compressor;
 use crate::sha256::DIGEST_LEN;
 
 /// Length of an HKDF-SHA256 pseudorandom key in bytes.
@@ -17,7 +18,15 @@ pub const MAX_OUTPUT_LEN: usize = 255 * DIGEST_LEN;
 /// HKDF-SHA256 extract step: PRK = HMAC(salt, ikm).
 #[must_use]
 pub fn extract(salt: &[u8], ikm: &[u8]) -> [u8; PRK_LEN] {
-    crate::hmac::hmac_sha256(salt, ikm)
+    extract_with(salt, ikm, Compressor::PORTABLE)
+}
+
+/// HKDF-SHA256 extract step using the given compression backend.
+#[must_use]
+pub fn extract_with(salt: &[u8], ikm: &[u8], compressor: Compressor) -> [u8; PRK_LEN] {
+    let mut mac = HmacSha256::with_compressor(salt, compressor);
+    mac.update(ikm);
+    mac.finalize()
 }
 
 /// HKDF-SHA256 in one call: extract, then expand `okm.len()` bytes.
@@ -28,6 +37,21 @@ pub fn extract(salt: &[u8], ikm: &[u8]) -> [u8; PRK_LEN] {
 /// bytes are requested.
 pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], okm: &mut [u8]) -> crate::Result<()> {
     HkdfSha256::new(salt, ikm).expand_into(info, okm)
+}
+
+/// HKDF-SHA256 with an explicit compression backend.
+///
+/// # Errors
+///
+/// Returns the same errors as the expansion step.
+pub fn hkdf_sha256_with(
+    salt: &[u8],
+    ikm: &[u8],
+    info: &[u8],
+    okm: &mut [u8],
+    compressor: Compressor,
+) -> crate::Result<()> {
+    HkdfSha256::with_compressor(salt, ikm, compressor).expand_into(info, okm)
 }
 
 /// An HKDF-SHA256 pseudorandom key, ready to be expanded.
@@ -43,6 +67,7 @@ pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], okm: &mut [u8]) -> crat
 /// ```
 pub struct HkdfSha256 {
     prk: [u8; PRK_LEN],
+    compressor: Compressor,
 }
 
 impl core::fmt::Debug for HkdfSha256 {
@@ -67,15 +92,25 @@ impl HkdfSha256 {
     /// Runs the extract step over the given salt and input key material.
     #[must_use]
     pub fn new(salt: &[u8], ikm: &[u8]) -> Self {
+        Self::with_compressor(salt, ikm, Compressor::PORTABLE)
+    }
+
+    /// Runs the extract step with the given compression backend.
+    #[must_use]
+    pub fn with_compressor(salt: &[u8], ikm: &[u8], compressor: Compressor) -> Self {
         Self {
-            prk: extract(salt, ikm),
+            prk: extract_with(salt, ikm, compressor),
+            compressor,
         }
     }
 
     /// Builds an instance from an already extracted pseudorandom key.
     #[must_use]
     pub const fn from_prk(prk: [u8; PRK_LEN]) -> Self {
-        Self { prk }
+        Self {
+            prk,
+            compressor: Compressor::PORTABLE,
+        }
     }
 
     /// Returns the pseudorandom key.
@@ -107,7 +142,7 @@ impl HkdfSha256 {
                 requested,
                 max: MAX_OUTPUT_LEN,
             })?;
-            let mut h = HmacSha256::new(&self.prk);
+            let mut h = HmacSha256::with_compressor(&self.prk, self.compressor);
             if i > 0 {
                 h.update(&block[..DIGEST_LEN]);
             }

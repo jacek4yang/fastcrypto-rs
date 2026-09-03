@@ -136,6 +136,9 @@ dependencies = [
 [[package]]
 name = "fastcrypto-x86"
 version = "0.1.0"
+dependencies = [
+ "fastcrypto-core",
+]
 
 [[package]]
 name = "find-msvc-tools"

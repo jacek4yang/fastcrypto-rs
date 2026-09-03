@@ -42,7 +42,7 @@ The rules of the project:
 | AArch64 feature detection (feature-gated probe) | done |
 | Benchmark laboratory (Criterion) | done |
 | Differential tests vs RustCrypto / ring / aws-lc-rs | done |
-| SHA-NI / AVX2 / NEON optimised SHA-256 | not started (next) |
+| x86_64 SHA-NI SHA-256 | done, selected at runtime, equivalence tested |
 | ChaCha20-Poly1305, AES-GCM, X25519 | benchmarks only, not implemented |
 
 See `PROJECT_STATUS.md` for the current handover note,

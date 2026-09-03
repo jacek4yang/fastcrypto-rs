@@ -8,7 +8,7 @@
 
 use zeroize::Zeroize;
 
-use crate::sha256::{BLOCK_LEN, DIGEST_LEN, Sha256};
+use crate::sha256::{BLOCK_LEN, Compressor, DIGEST_LEN, Sha256};
 use crate::util::{ct_eq, xor_into};
 
 /// HMAC-SHA256 tag length in bytes.
@@ -38,6 +38,8 @@ pub struct HmacSha256 {
     inner_state: [u32; 8],
     /// State after absorbing the opad key block.
     outer_state: [u32; 8],
+    /// Backend selected for this instance.
+    compressor: Compressor,
 }
 
 impl core::fmt::Debug for HmacSha256 {
@@ -70,6 +72,12 @@ impl HmacSha256 {
     /// RFC 2104. The key material is not retained after construction.
     #[must_use]
     pub fn new(key: &[u8]) -> Self {
+        Self::with_compressor(key, Compressor::PORTABLE)
+    }
+
+    /// Creates an HMAC instance that uses the given compression backend.
+    #[must_use]
+    pub fn with_compressor(key: &[u8], compressor: Compressor) -> Self {
         let mut k = [0u8; BLOCK_LEN];
         if key.len() > BLOCK_LEN {
             let hashed = crate::sha256::sha256(key);
@@ -84,10 +92,10 @@ impl HmacSha256 {
         xor_into(&mut opad, &k);
         k.zeroize();
 
-        let mut inner = Sha256::new();
+        let mut inner = Sha256::with_compressor(compressor);
         inner.update(&ipad);
         let inner_state = inner.state();
-        let mut outer = Sha256::new();
+        let mut outer = Sha256::with_compressor(compressor);
         outer.update(&opad);
         let outer_state = outer.state();
         ipad.zeroize();
@@ -97,6 +105,7 @@ impl HmacSha256 {
             inner,
             inner_state,
             outer_state,
+            compressor,
         }
     }
 
@@ -119,7 +128,7 @@ impl HmacSha256 {
     pub fn finalize_into(&self, out: &mut [u8; TAG_LEN]) {
         let mut inner_tag = [0u8; DIGEST_LEN];
         self.inner.finalize_into(&mut inner_tag);
-        let mut outer = Sha256::from_state(self.outer_state, PREFIX_LEN);
+        let mut outer = Sha256::from_state(self.outer_state, PREFIX_LEN, self.compressor);
         outer.update(&inner_tag);
         outer.finalize_into(out);
         inner_tag.zeroize();
@@ -136,7 +145,15 @@ impl HmacSha256 {
     /// Resets the instance so it can authenticate a new message under the same
     /// key, without recomputing the key blocks.
     pub fn reset(&mut self) {
-        self.inner = Sha256::from_state(self.inner_state, PREFIX_LEN);
+        self.inner = Sha256::from_state(self.inner_state, PREFIX_LEN, self.compressor);
+    }
+
+    /// Number of message bytes absorbed since the last reset.
+    ///
+    /// The key blocks are not counted: this is the message length only.
+    #[must_use]
+    pub const fn count(&self) -> u64 {
+        self.inner.count() - PREFIX_LEN
     }
 }
 

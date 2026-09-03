@@ -17,8 +17,17 @@
 
 #![no_std]
 
+// Only the tests need allocation; the library itself is allocation-free.
+#[cfg(test)]
+extern crate alloc;
+
+#[cfg(test)]
+extern crate std;
+
 #[cfg(target_arch = "x86_64")]
 pub mod detect;
+#[cfg(target_arch = "x86_64")]
+pub mod sha256;
 
 #[cfg(not(target_arch = "x86_64"))]
 pub mod detect {

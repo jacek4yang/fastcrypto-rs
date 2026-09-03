@@ -8,6 +8,7 @@ authors.workspace = true
 description = "x86_64 backend (feature detection and SIMD primitives) for fastcrypto-rs"
 
 [dependencies]
+fastcrypto-core = { workspace = true }
 
 [lints]
 workspace = true

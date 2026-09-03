@@ -456,6 +456,8 @@ dependencies = [
  "chacha20poly1305",
  "criterion",
  "fastcrypto",
+ "fastcrypto-core",
+ "fastcrypto-x86",
  "hkdf",
  "hmac",
  "iai-callgrind",
@@ -474,6 +476,9 @@ dependencies = [
 [[package]]
 name = "fastcrypto-x86"
 version = "0.1.0"
+dependencies = [
+ "fastcrypto-core",
+]
 
 [[package]]
 name = "fiat-crypto"

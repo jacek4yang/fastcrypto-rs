@@ -43,15 +43,21 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 
-pub mod backend;
+// Tests build small vectors; the library itself never allocates.
+#[cfg(test)]
+extern crate alloc;
 
+pub mod backend;
+pub mod dispatch;
+
+pub use dispatch::{
+    HkdfSha256, HmacSha256, Sha256, hkdf_sha256, hmac_sha256, hmac_sha256_verify, sha256,
+};
+pub use fastcrypto_core::Error;
+pub use fastcrypto_core::Result;
 pub use fastcrypto_core::hkdf::{MAX_OUTPUT_LEN, PRK_LEN};
 pub use fastcrypto_core::hmac::TAG_LEN;
 pub use fastcrypto_core::sha256::{BLOCK_LEN, DIGEST_LEN};
-pub use fastcrypto_core::{
-    Error, HkdfSha256, HmacSha256, Result, Sha256, hkdf_sha256, hmac_sha256, hmac_sha256_verify,
-    sha256,
-};
 
 /// Re-export of the zeroization trait so that callers can clear their own key
 /// material without adding a dependency on a specific zeroize version.

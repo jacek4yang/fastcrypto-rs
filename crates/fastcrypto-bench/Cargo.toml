@@ -10,9 +10,13 @@ publish = false
 
 [dependencies]
 fastcrypto = { workspace = true }
+fastcrypto-core = { workspace = true }
 
 # Competitors and reference implementations live here only. They are never
 # dependencies of the shipped cryptography library.
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
+fastcrypto-x86 = { workspace = true }
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 iai-callgrind = "0.16"
