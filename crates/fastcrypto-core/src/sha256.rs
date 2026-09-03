@@ -387,25 +387,256 @@ pub fn sha256(data: &[u8]) -> [u8; DIGEST_LEN] {
 
 /// SHA-256 compression function: mixes one 64-byte block into `state`.
 ///
+/// One SHA-256 round, FIPS 180-4 §6.2.2 step 3.
+///
+/// The working variables are passed by name rather than rotated with
+/// assignments. A round only writes `d` and `h`, so eight consecutive rounds
+/// with the names shifted one place bring every variable back to its original
+/// position — which is why [`rounds8`] takes the same eight identifiers every
+/// time. Doing the rotation in the compiler instead of at run time is the
+/// whole point: the previous loop paid eight register moves per round.
+macro_rules! round {
+    ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident, $g:ident, $h:ident,
+     $i:expr, $w:expr) => {{
+        let s1 = $e.rotate_right(6) ^ $e.rotate_right(11) ^ $e.rotate_right(25);
+        let ch = ($e & $f) ^ ((!$e) & $g);
+        let t1 = $h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[$i])
+            .wrapping_add($w);
+        let s0 = $a.rotate_right(2) ^ $a.rotate_right(13) ^ $a.rotate_right(22);
+        let maj = ($a & $b) ^ ($a & $c) ^ ($b & $c);
+        $d = $d.wrapping_add(t1);
+        $h = t1.wrapping_add(s0).wrapping_add(maj);
+    }};
+}
+
+/// Extends the circular schedule in place and yields the word round `$i` uses.
+///
+/// FIPS 180-4 §6.2.2 step 1 for `i >= 16`. The recurrence never looks more than
+/// sixteen words back, so a sixteen-slot ring is sufficient and the schedule
+/// stays in registers instead of a 64-word stack array.
+macro_rules! schedule {
+    ($w:expr, $i:expr) => {{
+        let y = $w[($i + 1) & 15];
+        let v = $w[($i + 14) & 15];
+        let s0 = y.rotate_right(7) ^ y.rotate_right(18) ^ (y >> 3);
+        let s1 = v.rotate_right(17) ^ v.rotate_right(19) ^ (v >> 10);
+        $w[$i & 15] = $w[$i & 15]
+            .wrapping_add(s0)
+            .wrapping_add($w[($i + 9) & 15])
+            .wrapping_add(s1);
+        $w[$i & 15]
+    }};
+}
+
+/// Eight rounds reading the schedule as it stands, for rounds 0..16.
+macro_rules! rounds8 {
+    ($w:expr, $base:expr, $a:ident, $b:ident, $c:ident, $d:ident,
+     $e:ident, $f:ident, $g:ident, $h:ident) => {
+        round!($a, $b, $c, $d, $e, $f, $g, $h, $base, $w[$base & 15]);
+        round!(
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $base + 1,
+            $w[($base + 1) & 15]
+        );
+        round!(
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $base + 2,
+            $w[($base + 2) & 15]
+        );
+        round!(
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $base + 3,
+            $w[($base + 3) & 15]
+        );
+        round!(
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $base + 4,
+            $w[($base + 4) & 15]
+        );
+        round!(
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $base + 5,
+            $w[($base + 5) & 15]
+        );
+        round!(
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $base + 6,
+            $w[($base + 6) & 15]
+        );
+        round!(
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $base + 7,
+            $w[($base + 7) & 15]
+        );
+    };
+}
+
+/// Eight rounds that extend the schedule first, for rounds 16..64.
+macro_rules! rounds8_extending {
+    ($w:expr, $base:expr, $a:ident, $b:ident, $c:ident, $d:ident,
+     $e:ident, $f:ident, $g:ident, $h:ident) => {
+        round!($a, $b, $c, $d, $e, $f, $g, $h, $base, schedule!($w, $base));
+        round!(
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $base + 1,
+            schedule!($w, $base + 1)
+        );
+        round!(
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $base + 2,
+            schedule!($w, $base + 2)
+        );
+        round!(
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $e,
+            $base + 3,
+            schedule!($w, $base + 3)
+        );
+        round!(
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $d,
+            $base + 4,
+            schedule!($w, $base + 4)
+        );
+        round!(
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $c,
+            $base + 5,
+            schedule!($w, $base + 5)
+        );
+        round!(
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $b,
+            $base + 6,
+            schedule!($w, $base + 6)
+        );
+        round!(
+            $b,
+            $c,
+            $d,
+            $e,
+            $f,
+            $g,
+            $h,
+            $a,
+            $base + 7,
+            schedule!($w, $base + 7)
+        );
+    };
+}
+
+/// Compresses one 64-byte block into the chaining state.
+///
 /// `#[inline(always)]` is deliberate: this is the entire hot loop, and a
 /// non-inlined copy costs a call per 64-byte block.
-// The compression function is the entire hot loop; keeping it out of line
-// costs a call per 64-byte block. See benchmarks/results/ for measurements.
-#[allow(clippy::inline_always)]
+///
+/// Fully unrolled. The previous version expressed the same arithmetic as a
+/// nested loop with an explicit `h = g; g = f; …` rotation, which LLVM did not
+/// unroll: the generated `portable_compress_blocks` was 411 instructions
+/// executed sixty-four times per block, against RustCrypto's 3,390-instruction
+/// straight-line body, and measured ~1,150 more retired instructions per block
+/// on an i3-8100 with both sides on their portable paths.
+///
+/// Two things went with the loop. The eight register moves per round are now
+/// compile-time name rotation, and the sixteen schedule words the last group
+/// used to compute and never read are simply not computed — `rounds8` reads the
+/// ring directly for rounds 0..16 and `rounds8_extending` covers 16..64.
+#[allow(
+    clippy::inline_always,
+    reason = "the compression function is the hot loop"
+)]
 #[inline(always)]
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_LEN]) {
-    // Circular 16-word message schedule.
-    //
-    // The FIPS 180-4 recurrence only ever looks 16 words back, so the schedule
-    // is kept in a 16-slot ring instead of a [u32; 64] array: at round i the
-    // slot holding w[i] is refilled with w[i+16] immediately after it is
-    // consumed. The whole schedule therefore stays in registers instead of
-    // living on the stack, which is where the first portable implementation
-    // spent its time (measured: 12.3 vs 8.1 cycles/byte against a portable
-    // reference; see benchmarks/results/).
-    //
-    // The last 16 rounds compute a schedule word that is never used. That costs
-    // about 16 * 7 arithmetic ops per block and removes a branch per round.
     let mut w = [0u32; 16];
     for (i, chunk) in block.chunks_exact(4).enumerate() {
         w[i] = u32::from_be_bytes(chunk.try_into().expect("chunks_exact(4) yields 4 bytes"));
@@ -420,43 +651,14 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_LEN]) {
     let mut g = state[6];
     let mut h = state[7];
 
-    // Four groups of sixteen rounds. Inside a group the message word index is
-    // the inner counter itself, so after unrolling every index is a constant
-    // and the schedule stays in registers. The fourth group computes no new
-    // schedule words, because no round consumes them.
-    for j in 0..4 {
-        for k in 0..16 {
-            let round = j * 16 + k;
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = h
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[round])
-                .wrapping_add(w[k]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-
-            if j < 3 {
-                let y = w[(k + 1) & 15];
-                let z = w[(k + 9) & 15];
-                let v = w[(k + 14) & 15];
-                let sig0 = y.rotate_right(7) ^ y.rotate_right(18) ^ (y >> 3);
-                let sig1 = v.rotate_right(17) ^ v.rotate_right(19) ^ (v >> 10);
-                w[k] = w[k].wrapping_add(sig0).wrapping_add(z).wrapping_add(sig1);
-            }
-        }
-    }
+    rounds8!(w, 0, a, b, c, d, e, f, g, h);
+    rounds8!(w, 8, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 16, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 24, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 32, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 40, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 48, a, b, c, d, e, f, g, h);
+    rounds8_extending!(w, 56, a, b, c, d, e, f, g, h);
 
     state[0] = state[0].wrapping_add(a);
     state[1] = state[1].wrapping_add(b);
