@@ -1,0 +1,14 @@
+[package]
+name = "fastcrypto-x86"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "x86_64 backend (feature detection and SIMD primitives) for fastcrypto-rs"
+
+[dependencies]
+
+[lints]
+workspace = true
+
