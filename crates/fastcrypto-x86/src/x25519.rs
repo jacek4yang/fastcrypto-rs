@@ -33,6 +33,13 @@
 //! an error. Rejecting that is the caller's responsibility and belongs in the
 //! safe API, not here.
 //!
+//! The committed assembly emits ELF directives (`.section .rodata`,
+//! `.note.GNU-stack`, `.type ..., %object`), so this module is gated to
+//! `x86_64` **Linux**. rust-reality is a Linux-only product, so that is the
+//! whole of its release matrix for this architecture; upstream also ships
+//! Mach-O forms, and adding them would be work for a consumer that does not
+//! exist.
+//!
 //! ABI: the System V AMD64 calling convention, `RDI`/`RSI`/`RDX` in, no return
 //! value, callee-saved registers preserved by the routine itself, at most
 //! ~450 bytes of its own stack frame, and no dependence on the red zone.
@@ -490,6 +497,19 @@ mod tests {
                     "-P",
                     "-I",
                     &format!("{root}/upstream"),
+                    // Every conditional in upstream's header is pinned on the
+                    // command line, so the result cannot depend on how the
+                    // host's compiler was configured. `-U__CET__` matters in
+                    // practice: a distribution that defaults to
+                    // `-fcf-protection` pulls in glibc's `cet.h`, which spells
+                    // the same ENDBR64 as a mnemonic and adds a
+                    // `.note.gnu.property` section. Taking upstream's explicit
+                    // byte sequence instead assembles to identical machine code
+                    // and needs no glibc header.
+                    "-U__APPLE__",
+                    "-U__CET__",
+                    "-D__ELF__",
+                    "-D__linux__",
                     "-DS2N_BN_HIDE_SYMBOLS",
                     &format!("{root}/upstream/{unit}.S"),
                 ])
@@ -505,10 +525,29 @@ mod tests {
             let committed =
                 fs::read_to_string(format!("{root}/{unit}.s")).expect("committed assembly");
 
-            assert_eq!(
+            let (expected, actual) = (
                 significant_lines(&regenerated),
                 significant_lines(&committed),
-                "{unit}.s is not the macro expansion of upstream/{unit}.S"
+            );
+            if let Some((line, (from_upstream, from_tree))) = expected
+                .iter()
+                .zip(actual.iter())
+                .enumerate()
+                .find(|(_, (a, b))| a != b)
+            {
+                panic!(
+                    "{unit}.s line {} is not what upstream/{unit}.S expands to\n\
+                     upstream: {from_upstream}\n\
+                     in tree:  {from_tree}",
+                    line + 1
+                );
+            }
+            assert_eq!(
+                expected.len(),
+                actual.len(),
+                "{unit}.s has {} significant lines, upstream expands to {}",
+                actual.len(),
+                expected.len()
             );
         }
     }

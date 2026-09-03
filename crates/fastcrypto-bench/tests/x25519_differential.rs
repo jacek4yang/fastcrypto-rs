@@ -8,7 +8,7 @@
 //! the baseline one exists, which is the case a pre-Haswell release binary
 //! runs, and the test narrows accordingly rather than silently passing.
 
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
 
 use aws_lc_rs::agreement::{PrivateKey, UnparsedPublicKey, X25519, agree};
 use fastcrypto::x25519::{EphemeralSecret, StaticSecret};

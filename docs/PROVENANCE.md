@@ -134,7 +134,8 @@ no C toolchain, and about 164 KB of `.text` plus `.rodata` instead of 2.6 MB.
 **Exact transformation.** For each of the four units:
 
 ```sh
-cpp -P -I upstream -DS2N_BN_HIDE_SYMBOLS upstream/<unit>.S \
+cpp -P -I upstream -U__APPLE__ -U__CET__ -D__ELF__ -D__linux__ \
+    -DS2N_BN_HIDE_SYMBOLS upstream/<unit>.S \
   | sed -E 's/\bcurve25519_/fastcrypto_curve25519_/g' > <unit>.s
 ```
 
@@ -143,6 +144,16 @@ applied at word boundaries so upstream's local labels keep their names and stay
 recognisable in a profile; it exists because a binary may legitimately contain
 both this import and AWS-LC's copy during A/B measurement, and two definitions
 of `curve25519_x25519` would collide at link time.
+
+Every conditional in upstream's header is pinned on the command line so the
+result cannot depend on how the host compiler was configured. `-U__CET__` is
+the one that bites: a distribution defaulting to `-fcf-protection` defines it,
+which pulls in glibc's `cet.h` and spells the same ENDBR64 as a mnemonic while
+adding a `.note.gnu.property` section. Upstream's own explicit byte sequence
+assembles to identical machine code, needs no glibc header, and is what is
+committed. `-D__ELF__ -D__linux__` fix the output to the ELF form, which is why
+the module is gated to Linux.
+
 `fastcrypto_x86::x25519::tests::regenerating_the_assembly_reproduces_it`
 re-runs that pipeline and compares, so the claim is checked rather than
 asserted, and

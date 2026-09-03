@@ -25,7 +25,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Adds one arm per compiled fastcrypto variant, so a machine with BMI2/ADX
 /// still reports what a pre-Haswell release binary would run.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 fn fastcrypto_agreement_arms(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     secret: &[u8; 32],
@@ -52,7 +52,7 @@ fn fastcrypto_agreement_arms(
 }
 
 /// Fixed-base scalar multiplication, one arm per compiled variant.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 fn fastcrypto_public_key_arms(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     secret: &[u8; 32],
@@ -113,7 +113,7 @@ fn fixed_key(c: &mut criterion::Criterion) {
         });
     });
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     fastcrypto_agreement_arms(&mut group, &alice_sk, &bob_pk);
 
     group.finish();
@@ -141,7 +141,7 @@ fn public_key(c: &mut criterion::Criterion) {
         b.iter(|| black_box(lc_secret.compute_public_key().unwrap()));
     });
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     fastcrypto_public_key_arms(&mut group, &alice_sk);
 
     group.finish();

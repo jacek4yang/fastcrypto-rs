@@ -6,8 +6,9 @@
 //! * [`detect`] — a cached, allocation-free, branch-light CPU feature probe,
 //!   the dispatch foundation everything else here selects on.
 //! * [`sha256`] — SHA-256 using Intel SHA Extensions (SHA-NI).
-//! * [`x25519`] — X25519, from s2n-bignum's assembly, integrated with
+//! * `x25519` — X25519, from s2n-bignum's assembly, integrated with
 //!   `global_asm!` so that it needs no build script and no C toolchain.
+//!   x86_64 Linux only, because the imported assembly emits ELF directives.
 //!
 //! # Safety policy
 //!
@@ -28,7 +29,7 @@ extern crate std;
 pub mod detect;
 #[cfg(target_arch = "x86_64")]
 pub mod sha256;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 pub mod x25519;
 
 #[cfg(not(target_arch = "x86_64"))]
