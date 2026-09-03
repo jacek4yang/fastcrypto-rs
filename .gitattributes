@@ -1,0 +1,7 @@
+# The working tree arrived once with every file rewritten to CRLF, producing an
+# 8,615-line diff in which no file differed by anything except carriage
+# returns. Normalise on the way in so that cannot recur.
+* text=auto eol=lf
+
+# Fuzz corpus entries are opaque bytes, not text.
+fuzz/corpus/** -text
