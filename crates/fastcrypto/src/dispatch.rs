@@ -248,7 +248,6 @@ pub fn hkdf_sha256(
 /// let mut key = [0u8; 32];
 /// let mut iv = [0u8; 12];
 /// expander.expand_into(b"key", &mut key).unwrap();
-/// expander.reset();
 /// expander.expand_into(b"iv", &mut iv).unwrap();
 /// ```
 pub struct HkdfExpander(fastcrypto_core::HkdfExpander);
@@ -269,16 +268,14 @@ impl HkdfExpander {
 
     /// Runs the expand step, writing as many bytes as the output buffer holds.
     ///
+    /// Each call is independent; expanding many labels from one PRK needs no
+    /// bookkeeping from the caller.
+    ///
     /// # Errors
     ///
     /// Returns `Error::OutputTooLong` when more than 255 blocks are requested.
     pub fn expand_into(&mut self, info: &[u8], okm: &mut [u8]) -> fastcrypto_core::Result<()> {
         self.0.expand_into(info, okm)
-    }
-
-    /// Discards intermediate state, ready for the next label.
-    pub fn reset(&mut self) {
-        self.0.reset();
     }
 }
 
