@@ -1,0 +1,54 @@
+[package]
+name = "fastcrypto-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Benchmark and differential-testing laboratory for fastcrypto-rs"
+publish = false
+
+[dependencies]
+fastcrypto = { workspace = true }
+
+# Competitors and reference implementations live here only. They are never
+# dependencies of the shipped cryptography library.
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+iai-callgrind = "0.16"
+sha2 = "0.11"
+hmac = "0.13"
+hkdf = "0.13"
+chacha20poly1305 = "0.11"
+aes-gcm = "0.11"
+x25519-dalek = { version = "3.0", features = ["static_secrets"] }
+ring = "0.17"
+aws-lc-rs = "1.18"
+
+[[bench]]
+name = "micro"
+harness = false
+
+[[bench]]
+name = "sha256"
+harness = false
+
+[[bench]]
+name = "hkdf"
+harness = false
+
+[[bench]]
+name = "aead"
+harness = false
+
+[[bench]]
+name = "x25519"
+harness = false
+
+[[bin]]
+name = "bench-env"
+path = "src/bin/bench-env.rs"
+
+[lints]
+workspace = true
+
