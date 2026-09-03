@@ -321,9 +321,12 @@ impl Sha256 {
         scratch[len_at..len_at + 8].copy_from_slice(&bit_len.to_be_bytes());
 
         let mut state = self.state;
-        self.compressor
-            .run(&mut state, &scratch[..blocks * BLOCK_LEN]);
-        scratch.zeroize();
+        let used = blocks * BLOCK_LEN;
+        self.compressor.run(&mut state, &scratch[..used]);
+        // Only the bytes that were written can hold message data, so
+        // zeroizing the whole scratch would be wasted work: the volatile
+        // stores are the expensive part of a small finalize.
+        scratch[..used].zeroize();
         for (i, word) in state.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
         }

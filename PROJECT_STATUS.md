@@ -90,33 +90,39 @@ value from the RFC text was then used verbatim. That is the intended workflow.
 
 ## Benchmark summary (2026-09-03, shared cloud container, AMD EPYC 9K65)
 
-Full tables in ``benchmarks/results/``. Headline numbers:
+Full tables in `benchmarks/results/`. Headline numbers:
 
-* SHA-256 one-shot at 64 KiB: **36.1 us** for us, ring **35.9 us**, aws-lc-rs
-  **35.9 us** - a 0.5-0.7% difference, inside the noise of a shared container.
-  At 1 KiB and above the three are indistinguishable in this run; below 256 B we
-  are still clearly behind (0 B: 97.5 ns vs 61.6 ns for aws-lc-rs).
-* SHA-256 improvement today: -62% to -81% versus our own portable code, in two
-  steps (message schedule rework, then SHA-NI).
+* SHA-256 one-shot at 64 KiB: **35.9 us** for us, ring **35.9 us**, aws-lc-rs
+  **35.9 us** - indistinguishable in this run. At 0 B: **70.5 ns** for us,
+  ring 79.2 ns, aws-lc-rs 61.6 ns, so the fixed-cost gap at small sizes
+  narrowed from about 58% behind the best competitor to about 14%.
+* SHA-256 improvement today: about **-70%** at small sizes and **-82%** at
+  64 KiB versus the first portable baseline, in three measured steps
+  (message schedule, SHA-NI, zeroization scope).
 * Streaming 64 KiB in 1 KiB updates: 36.3 us vs ring 36.1 us.
-* HKDF-SHA256 extract + expand to 88 bytes: 1369 ns vs RustCrypto hkdf 648 ns,
-  aws-lc-rs 820 ns, ring 831 ns. This is now the weakest primitive.
+* HKDF-SHA256 extract + expand to 88 bytes: **1205.7 ns** vs RustCrypto hkdf
+  656.6 ns, ring 798.6 ns, aws-lc-rs 838.0 ns. Still the weakest primitive.
 * AEAD and X25519 groups are still reference numbers only; those primitives are
   not implemented yet.
 
-No claim of being faster than any competitor is made anywhere. The current
-implementation is slower at every size.
+Competitiveness, stated precisely: at 1 KiB and above our SHA-256 is
+indistinguishable from ring and aws-lc-rs in these runs (within 1%). At
+small sizes we are within about 14% of the best competitor at 0 B and
+still behind aws-lc-rs. HKDF-SHA256 is about 1.8x slower than RustCrypto
+hkdf. Every one of those statements is a single-run measurement on a
+shared container, so none of them is a claim of being faster: they are
+the numbers a dedicated machine has to confirm or refute.
 
 ## Current bottlenecks, in priority order
 
-1. **HKDF-SHA256 dataflow (~2x against RustCrypto hkdf).** Every HMAC in the
+1. **HKDF-SHA256 dataflow (~1.8x against RustCrypto hkdf).** Every HMAC in the
    expand chain rebuilds its ipad/opad key states (two extra compressions each)
    and every finalize zeroizes a 128-byte padding scratch with volatile writes.
    A TLS key schedule expands several labels from one PRK, so preparing the HMAC
    key once and reusing it is the fix. Measured at 1369 ns vs 648 ns for a full
-   extract + expand to 88 bytes.
-2. **Fixed per-call cost on small inputs (0 B: 97.5 ns vs 61.6 ns).** Hasher
-   construction is 26.9 ns against 2.5 ns for RustCrypto: zeroization on drop
+   extract + expand to 88 bytes (1205.7 ns vs 656.6 ns).
+2. **Fixed per-call cost on small inputs (0 B: 70.5 ns vs 61.6 ns).** Hasher
+   construction is 26.3 ns against 2.4 ns for RustCrypto: zeroization on drop
    (9 words plus a 64-byte block of volatile writes). Deliberate trade-off, but
    it now dominates below 256 bytes, which is the range TLS handshake hashing
    lives in.
@@ -129,6 +135,9 @@ implementation is slower at every size.
 Every optimization attempt is recorded with its measurement, including the ones
 that were reverted:
 
+* `benchmarks/results/2026-09-03-zeroization-scope.md` - narrow the
+  zeroization in finalize to the bytes actually written: -27.7% at 0 B,
+  -12% to -16% on HKDF, no change to the security property.
 * `benchmarks/results/2026-09-03-sha256-sha-ni.md` - x86_64 SHA-NI backend:
   -62% to -81% per size, plus the safe dispatch seam (Compressor) that let
   the public API stay forbid(unsafe_code).
@@ -138,7 +147,9 @@ that were reverted:
 
 ## Next concrete optimization task
 
-**Fix the HKDF-SHA256 dataflow.** Ordered steps, each with its own commit, tests
+**Prepare the HMAC key state once per PRK.** Target: 1205.7 ns to under 900 ns
+for a full extract + expand to 88 bytes. Ordered steps, each with its own
+commit, tests
 and benchmark run:
 
 1. Baseline is recorded (this file and the results directory).
