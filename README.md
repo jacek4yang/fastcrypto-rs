@@ -102,6 +102,16 @@ docs/                      architecture, benchmarking, security model, roadmap
 fuzz/                      cargo-fuzz differential targets
 ```
 
+## Adapting mature implementations
+
+This repository is allowed to port and adapt mature implementations rather than
+deriving optimised field arithmetic and assembly from specifications alone.
+That permission comes with a rule: every line of adapted code must be traceable
+to an identified upstream, exact revision and compatible license *before* it is
+written down, and formal verification does not survive modification.
+
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md) is both the policy and the register.
+
 ## Working rules
 
 1. **Correctness first.** Standardised constructions only, published
@@ -127,8 +137,8 @@ cargo bench -p fastcrypto-bench --bench sha256
 
 Per-primitive readiness lives in [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 Research state, decisions and rejected hypotheses live in this repository's
-GitHub issues. `docs/` holds the architecture, benchmarking method and
-security model.
+GitHub issues. `docs/` holds the architecture, benchmarking method, security
+model and the provenance register for adapted implementations.
 
 This repository was developed on CNB and migrated to GitHub with its full
 history at commit `5129598`; GitHub is now the only authoritative host.
