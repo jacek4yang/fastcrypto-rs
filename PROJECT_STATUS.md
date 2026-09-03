@@ -160,7 +160,7 @@ revision, the exact transformation and the narrow verification claim are in
 | fuzzing | `FUZZED` — differential target against `x25519-dalek` |
 | `no_std`, allocation-free | yes; entropy is the caller's, so the primitive takes 32 bytes rather than an RNG |
 | zeroization | all three secret types zeroize on drop; no secret bytes in any `Debug` |
-| side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` — the arithmetic is upstream's and unmodified, but no timing experiment has been recorded here |
+| side channel | **reviewed**: instruction and data-access counts do not move with the secret scalar or the attacker-chosen peer encoding, for every compiled variant, including the adversarial encodings. Limits stated in [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) — identical counts are not identical addresses |
 | generated code | the machine code `global_asm!` emits is byte-identical to GNU `as` output on both architectures, for every routine's `.text` and every `.rodata` table |
 | performance | **k = 0.99–1.00** at both production shapes, on a quiet pinned P-core, measured twice (see below) |
 | portability | **x86_64 and AArch64 Linux** — rust-reality's entire release matrix. The imported assembly emits ELF directives, so Linux is the bound. There is deliberately no portable fallback: a portable X25519 measures 1.85x and would be a regression pretending to be one |

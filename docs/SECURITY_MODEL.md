@@ -36,6 +36,86 @@ Out of scope (documented, not solved):
 | Zeroization of secrets | yes on drop, via `zeroize` | `Sha256`, `HmacSha256`, `HkdfSha256` |
 | Debug output does not leak state | yes; `Debug` prints lengths only | `Sha256::fmt` |
 | Backends gated on CPU feature detection | yes | `fastcrypto-x86`, `fastcrypto-aarch64` |
+| X25519 does no input-dependent work | **measured**, see below | `fastcrypto-x86/src/x25519.rs`, `fastcrypto-aarch64/src/x25519.rs` |
+
+## X25519: what was measured, and what it does and does not show
+
+X25519 is imported assembly, so the usual worry — that the compiler turns a
+branchless source into a branch — does not apply: `global_asm!` emits exactly
+what is written, and that was checked byte-for-byte against GNU `as` on both
+architectures. What remained to check is the assembly itself and the Rust
+wrapper around it.
+
+### The measurement
+
+`scripts/constant-time-x25519.sh` runs one operation per process under Valgrind
+and compares counts. Valgrind is deterministic, so "the same count for every
+input" is a repeatable claim rather than a timing impression on a noisy machine.
+
+Reviewed on an i5-1240P, for **every compiled variant**, not only the dispatched
+one — the others ship and would run on other hardware:
+
+| variant | measurement | result |
+| --- | --- | --- |
+| dispatch, baseline, adx | instructions, 24 secret scalars, variable-base | one value each |
+| dispatch, baseline, adx | instructions, 24 peer encodings, variable-base | one value each |
+| dispatch, baseline, adx | instructions, 24 secret scalars, fixed-base | one value each |
+| dispatch, baseline, adx | data references, D1 and LL misses, 12 secret scalars, both operations | one value each |
+
+The 24 peer encodings are not decoration: they include the canonical low-order
+points, the non-canonical field encodings of them, and all-ones — the inputs an
+attacker actually gets to choose.
+
+### What that supports
+
+* **No input-dependent control flow.** Executed-instruction counts do not move
+  with the secret scalar or with the peer encoding. A secret-dependent branch or
+  a variable loop bound would show here.
+* **No input-dependent data-access volume**, and, for the fixed-base routine,
+  **no input-dependent cache footprint**. That last one matters most: the
+  fixed-base path reads a 48,576-byte precomputed table, and a table *indexed*
+  by scalar digits would touch different cache lines for different secrets and
+  move the D1 miss count. It does not, which is consistent with upstream's
+  documented constant-time table scan.
+
+### What it does not support, and must not be read as
+
+* **Identical counts are not identical addresses.** A pattern that touches the
+  same number of lines at secret-dependent addresses would pass this. Ruling
+  that out needs taint analysis (ctgrind-style), which has not been run.
+* **Nothing here measures a real CPU.** Valgrind models a cache; it says nothing
+  about prefetchers, store-forwarding, port contention, or SMT.
+* **Absolute counts are not portable between runs.** They shift by a few with
+  the process environment, because that moves the initial stack and therefore
+  cache-set alignment. Only within-run comparison means anything, and the script
+  only compares within a run.
+* **This is not a proof and not an audit.** It is evidence that a specific class
+  of defect is absent on one machine, for one build.
+
+One earlier run — before the script labelled each measurement with its input —
+reported two distinct D1-miss counts for the baseline variable-base routine,
+differing by 145 with identical data references and identical LL misses. It did
+not reproduce: 24 inputs across two passes, plus eight repeats of a single
+input, all gave one value. Recorded because a non-reproducing observation is
+still an observation, and because the labelled script exists so that a
+recurrence names the inputs that disagreed instead of only the numbers.
+
+That first version of the script also *could not fail*: it joined every run's
+measurement into one line, so `sort -u` always saw a single value. It reported
+PASS on data it had not actually compared. Fixed, and worth stating plainly,
+because a check that cannot fail is worse than no check.
+
+### The Rust wrapper
+
+* The RFC 7748 §6.1 rejection accumulates all 32 bytes rather than returning at
+  the first non-zero one (`fastcrypto::x25519::is_zero`), so it does not leak
+  where a shared secret first differs from zero.
+* Dispatch branches on cached CPU features, never on key material.
+* The scalar is **not** clamped by the wrapper, because the assembly clamps
+  internally — proved by a test rather than assumed, so no duplicate work and no
+  second copy of the secret.
+* All three secret types zeroize on drop and no `Debug` implementation prints
+  key bytes.
 
 ## What has NOT been verified
 
@@ -58,9 +138,12 @@ constant-time behaviour:
    key state on purpose (that is the TLS pattern); callers must not reuse an
    HMAC key across security contexts where the construction forbids it.
 5. **No SMT/core-local timing guarantees.** Nothing here partitions cores.
-6. **Assembly, when it is added, will need its own review.** Intrinsics keep us
-   inside LLVM's code generator today; handwritten assembly removes that
-   guarantee.
+6. **Imported assembly has had the review above, and no more than that.** The
+   X25519 routines are upstream s2n-bignum, unmodified, and their upstream
+   HOL Light proofs cover upstream's build rather than ours. What this
+   repository has is the instruction- and access-count evidence above, RFC 7748
+   vectors, and differential agreement with two independent implementations.
+   Ed25519, AEAD and anything else added later needs its own.
 
 ## Compiler and CPU assumptions
 
