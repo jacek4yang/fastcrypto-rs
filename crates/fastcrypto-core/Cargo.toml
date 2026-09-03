@@ -1,0 +1,19 @@
+[package]
+name = "fastcrypto-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Portable, no_std, allocation-free cryptographic primitives for fastcrypto-rs"
+
+[dependencies]
+zeroize = { workspace = true }
+
+[features]
+default = []
+std = ["zeroize/std"]
+
+[lints]
+workspace = true
+
