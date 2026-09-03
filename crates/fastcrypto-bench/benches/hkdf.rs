@@ -207,9 +207,37 @@ fn multi_label(c: &mut criterion::Criterion) {
     group.finish();
 }
 
+/// Four labels from one PRK using a prepared HMAC key state.
+///
+/// This is the TLS 1.3 shape: one pseudorandom key, several labels. The
+/// comparison against the `multi_label` group, which re-prepares the key
+/// per label, is the measured value of the prepared-state API.
+fn multi_label_prepared_key(c: &mut criterion::Criterion) {
+    let salt = common::key(32);
+    let ikm = common::key(32);
+    let labels: Vec<Vec<u8>> = (0..4u8)
+        .map(|i| common::message(8 + usize::from(i)))
+        .collect();
+
+    let prk = fastcrypto::HkdfSha256::new(&salt, &ikm);
+    let mut expander = prk.expander();
+    let mut group = c.benchmark_group("hkdf-sha256_four-labels-prepared-key");
+    group.bench_function("fastcrypto", |b| {
+        let mut out = [0u8; 32];
+        b.iter(|| {
+            for label in &labels {
+                expander.expand_into(black_box(label), &mut out).unwrap();
+                expander.reset();
+            }
+            black_box(out)
+        });
+    });
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = common::criterion();
-    targets = extract, expand, full, multi_label
+    targets = extract, expand, full, multi_label, multi_label_prepared_key
 }
 criterion_main!(benches);

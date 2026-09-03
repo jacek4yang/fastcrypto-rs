@@ -119,6 +119,13 @@ impl HkdfSha256 {
         self.prk
     }
 
+    /// Returns an expander that reuses one prepared HMAC key state across
+    /// several labels.
+    #[must_use]
+    pub fn expander(&self) -> HkdfExpander {
+        HkdfExpander::new(&self.prk, self.compressor)
+    }
+
     /// Runs the expand step, writing `okm.len()` bytes of output.
     ///
     /// # Errors
@@ -134,6 +141,12 @@ impl HkdfSha256 {
         }
 
         let requested = okm.len();
+        // One HMAC key state for the whole chain: every block of HKDF-Expand
+        // is authenticated under the same PRK, so preparing the ipad/opad
+        // states once and resetting between blocks saves two compressions
+        // per block. reset() restores exactly the state of a freshly
+        // constructed HMAC under the same key, so the output is unchanged.
+        let mut h = HmacSha256::with_compressor(&self.prk, self.compressor);
         let mut block = [0u8; DIGEST_LEN];
         for (i, out) in okm.chunks_mut(DIGEST_LEN).enumerate() {
             // The length check above bounds the block count at 255, so the
@@ -142,8 +155,8 @@ impl HkdfSha256 {
                 requested,
                 max: MAX_OUTPUT_LEN,
             })?;
-            let mut h = HmacSha256::with_compressor(&self.prk, self.compressor);
             if i > 0 {
+                h.reset();
                 h.update(&block[..DIGEST_LEN]);
             }
             h.update(info);
@@ -153,6 +166,75 @@ impl HkdfSha256 {
         }
         block.zeroize();
         Ok(())
+    }
+}
+
+/// An HKDF-SHA256 expander that keeps one prepared HMAC key state.
+///
+/// TLS 1.3 expands several labels from the same pseudorandom key. Doing that
+/// through `HkdfSha256::expand_into` prepares the
+/// ipad/opad states again for every call, which costs two compressions per
+/// label. This type prepares them once and resets between labels, which is
+/// byte-for-byte identical output
+/// because reset restores exactly the post-ipad state of a fresh HMAC under
+/// the same key.
+pub struct HkdfExpander {
+    hmac: HmacSha256,
+}
+
+impl core::fmt::Debug for HkdfExpander {
+    /// Deliberately opaque: it holds key material.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HkdfExpander").finish_non_exhaustive()
+    }
+}
+
+impl HkdfExpander {
+    /// Prepares an expander for the given pseudorandom key.
+    #[must_use]
+    pub fn new(prk: &[u8; PRK_LEN], compressor: Compressor) -> Self {
+        Self {
+            hmac: HmacSha256::with_compressor(prk, compressor),
+        }
+    }
+
+    /// Runs the expand step, writing as many bytes as the output buffer holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::OutputTooLong` when more than 255 blocks are requested.
+    pub fn expand_into(&mut self, info: &[u8], okm: &mut [u8]) -> crate::Result<()> {
+        if okm.len() > MAX_OUTPUT_LEN {
+            return Err(crate::Error::OutputTooLong {
+                requested: okm.len(),
+                max: MAX_OUTPUT_LEN,
+            });
+        }
+
+        let requested = okm.len();
+        let mut block = [0u8; DIGEST_LEN];
+        for (i, out) in okm.chunks_mut(DIGEST_LEN).enumerate() {
+            let counter = u8::try_from(i + 1).map_err(|_| crate::Error::OutputTooLong {
+                requested,
+                max: MAX_OUTPUT_LEN,
+            })?;
+            if i > 0 {
+                self.hmac.reset();
+                self.hmac.update(&block[..DIGEST_LEN]);
+            }
+            self.hmac.update(info);
+            self.hmac.update(&[counter]);
+            self.hmac.finalize_into(&mut block);
+            out.copy_from_slice(&block[..out.len()]);
+        }
+        block.zeroize();
+        Ok(())
+    }
+
+    /// Discards any intermediate state, leaving the prepared key state ready
+    /// for the next label.
+    pub fn reset(&mut self) {
+        self.hmac.reset();
     }
 }
 
@@ -249,6 +331,53 @@ mod tests {
         prk.expand_into(b"label", &mut short).unwrap();
         prk.expand_into(b"label", &mut long).unwrap();
         assert_eq!(&long[..31], &short[..]);
+    }
+
+    /// The prepared-key expander must be byte-for-byte identical to a fresh
+    /// expansion, for every label and length. This is the whole justification
+    /// for the type.
+    #[test]
+    fn expander_matches_expand_into() {
+        let prk = HkdfSha256::new(b"salt", b"ikm");
+        let mut expander = prk.expander();
+        for label_len in [0usize, 1, 16, 100] {
+            let label: alloc::vec::Vec<u8> = (0..label_len)
+                .map(|i| (i * 3 + 1).to_le_bytes()[0])
+                .collect();
+            for out_len in [1usize, 16, 32, 33, 88, 200] {
+                let mut from_expander = alloc::vec![0u8; out_len];
+                let mut from_prk = alloc::vec![0u8; out_len];
+                expander.expand_into(&label, &mut from_expander).unwrap();
+                expander.reset();
+                prk.expand_into(&label, &mut from_prk).unwrap();
+                assert_eq!(
+                    from_expander, from_prk,
+                    "label {} out {}",
+                    label_len, out_len
+                );
+            }
+        }
+    }
+
+    /// Reusing the same expander across labels must not leak state between
+    /// them.
+    #[test]
+    fn expander_labels_are_independent() {
+        let prk = HkdfSha256::new(b"salt", b"ikm");
+        let mut expander = prk.expander();
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        let mut c = [0u8; 32];
+        expander.expand_into(b"first", &mut a).unwrap();
+        expander.reset();
+        expander.expand_into(b"second", &mut b).unwrap();
+        expander.reset();
+        expander.expand_into(b"first", &mut c).unwrap();
+        let mut reference = [0u8; 32];
+        prk.expand_into(b"first", &mut reference).unwrap();
+        assert_eq!(a, c);
+        assert_eq!(a, reference);
+        assert_ne!(a, b);
     }
 
     #[test]

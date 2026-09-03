@@ -51,7 +51,8 @@ pub mod backend;
 pub mod dispatch;
 
 pub use dispatch::{
-    HkdfSha256, HmacSha256, Sha256, hkdf_sha256, hmac_sha256, hmac_sha256_verify, sha256,
+    HkdfExpander, HkdfSha256, HmacSha256, Sha256, hkdf_sha256, hmac_sha256, hmac_sha256_verify,
+    sha256,
 };
 pub use fastcrypto_core::Error;
 pub use fastcrypto_core::Result;

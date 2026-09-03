@@ -24,7 +24,7 @@ Read this file together with:
 | Component | State |
 | --- | --- |
 | Workspace, pinned toolchain, lint gates | done |
-| `fastcrypto-core` (portable, no_std, no unsafe) | SHA-256, HMAC-SHA256, HKDF-SHA256 |
+| `fastcrypto-core` (portable, no_std, no unsafe) | SHA-256, HMAC-SHA256, HKDF-SHA256, prepared-key expander |
 | `fastcrypto-x86` | CPUID feature detection, cached, cross-checked against std |
 | `fastcrypto-aarch64` | feature probe (std-gated), cross-compiles |
 | `fastcrypto` (public API) | safe re-exports + `backend` reporting |
@@ -100,8 +100,11 @@ Full tables in `benchmarks/results/`. Headline numbers:
   64 KiB versus the first portable baseline, in three measured steps
   (message schedule, SHA-NI, zeroization scope).
 * Streaming 64 KiB in 1 KiB updates: 36.3 us vs ring 36.1 us.
-* HKDF-SHA256 extract + expand to 88 bytes: **1205.7 ns** vs RustCrypto hkdf
-  656.6 ns, ring 798.6 ns, aws-lc-rs 838.0 ns. Still the weakest primitive.
+* HKDF-SHA256 extract + expand to 88 bytes: **922.9 ns**, vs RustCrypto hkdf
+  657.8 ns, ring 785.2 ns, aws-lc-rs 811.2 ns. On the TLS-shaped workload
+  (four labels from one PRK, using the prepared-key expander added today):
+  **640.2 ns** vs RustCrypto hkdf 482.8 ns, down from 1200 ns with the
+  per-label API. It was 4346 ns at the start of the day.
 * AEAD and X25519 groups are still reference numbers only; those primitives are
   not implemented yet.
 
@@ -115,13 +118,13 @@ the numbers a dedicated machine has to confirm or refute.
 
 ## Current bottlenecks, in priority order
 
-1. **HKDF-SHA256 dataflow (~1.8x against RustCrypto hkdf).** Every HMAC in the
+1. **HKDF-SHA256 fixed costs (~1.4x against RustCrypto hkdf for a single
    expand chain rebuilds its ipad/opad key states (two extra compressions each)
    and every finalize zeroizes a 128-byte padding scratch with volatile writes.
    A TLS key schedule expands several labels from one PRK, so preparing the HMAC
    key once and reusing it is the fix. Measured at 1369 ns vs 648 ns for a full
    extract + expand to 88 bytes (1205.7 ns vs 656.6 ns).
-2. **Fixed per-call cost on small inputs (0 B: 70.5 ns vs 61.6 ns).** Hasher
+2. **Zeroization fixed costs (construction 26.3 ns, finalize scratch).** Hasher
    construction is 26.3 ns against 2.4 ns for RustCrypto: zeroization on drop
    (9 words plus a 64-byte block of volatile writes). Deliberate trade-off, but
    it now dominates below 256 bytes, which is the range TLS handshake hashing
@@ -135,6 +138,9 @@ the numbers a dedicated machine has to confirm or refute.
 Every optimization attempt is recorded with its measurement, including the ones
 that were reverted:
 
+* `benchmarks/results/2026-09-03-hkdf-key-reuse.md` - reuse the HMAC
+  key state across the HKDF expand chain and add HkdfExpander for the
+  TLS-shaped multi-label case: -29% on expand, -47% on four labels.
 * `benchmarks/results/2026-09-03-zeroization-scope.md` - narrow the
   zeroization in finalize to the bytes actually written: -27.7% at 0 B,
   -12% to -16% on HKDF, no change to the security property.
@@ -147,19 +153,15 @@ that were reverted:
 
 ## Next concrete optimization task
 
-**Prepare the HMAC key state once per PRK.** Target: 1205.7 ns to under 900 ns
-for a full extract + expand to 88 bytes. Ordered steps, each with its own
-commit, tests
-and benchmark run:
+**Remove the remaining per-call zeroization costs.** Two items, measured, each
+with its own commit and benchmark run:
 
-1. Baseline is recorded (this file and the results directory).
-2. Prepare the HMAC key state once per PRK and reuse it across the expand chain,
-   instead of rebuilding ipad/opad for every block.
-3. Replace the per-finalize volatile zeroization of the 128-byte padding scratch
-   with a memset plus an optimisation barrier, and measure it at 0 B and 64 KiB.
-4. Re-run the KAT, differential and backend-equivalence tests, then the hkdf and
-   sha256 benchmark groups.
-5. Keep only if every size improves; otherwise revert and record why.
+1. finalize: avoid the 128-byte padding scratch entirely for messages whose tail
+   fits in one block, and zeroize only the tail bytes that hold message data.
+2. construction: 26.3 ns per hasher, all of it volatile zeroization on drop of
+   the state and the block buffer. Decide, with numbers, whether to keep it as
+   is (documented trade-off) or to make zeroization explicit at the API level
+   for callers that hash public data.
 
 After that: the AArch64 ARMv8 SHA-2 backend, then AEAD (ChaCha20-Poly1305).
 

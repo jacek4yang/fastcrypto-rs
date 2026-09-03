@@ -45,7 +45,7 @@ pub mod sha256;
 mod util;
 
 pub use error::Error;
-pub use hkdf::{HkdfSha256, extract, extract_with, hkdf_sha256, hkdf_sha256_with};
+pub use hkdf::{HkdfExpander, HkdfSha256, extract, extract_with, hkdf_sha256, hkdf_sha256_with};
 pub use hmac::{HmacSha256, hmac_sha256, hmac_sha256_verify};
 pub use sha256::{Sha256, sha256};
 

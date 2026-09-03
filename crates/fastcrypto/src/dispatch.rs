@@ -196,6 +196,16 @@ impl HkdfSha256 {
         self.0.prk()
     }
 
+    /// Returns an expander that reuses one prepared HMAC key state across
+    /// several labels.
+    #[must_use]
+    pub fn expander(&self) -> HkdfExpander {
+        HkdfExpander(fastcrypto_core::HkdfExpander::new(
+            &self.0.prk(),
+            sha256_compressor(),
+        ))
+    }
+
     /// Runs the expand step, writing as many bytes as the output buffer holds.
     ///
     /// # Errors
@@ -219,6 +229,57 @@ pub fn hkdf_sha256(
     okm: &mut [u8],
 ) -> fastcrypto_core::Result<()> {
     fastcrypto_core::hkdf_sha256_with(salt, ikm, info, okm, sha256_compressor())
+}
+
+/// HKDF-SHA256 expander with a prepared key state, for expanding several
+/// labels from one pseudorandom key.
+///
+/// This is the shape a TLS 1.3 key schedule uses: one PRK, many labels. Using
+/// this type instead of calling `expand_into` once per label saves two
+/// compressions per label, and produces identical bytes.
+///
+/// # Example
+///
+/// ```
+/// use fastcrypto::{HkdfSha256, sha256};
+///
+/// let prk = HkdfSha256::new(b"salt", b"input key material");
+/// let mut expander = prk.expander();
+/// let mut key = [0u8; 32];
+/// let mut iv = [0u8; 12];
+/// expander.expand_into(b"key", &mut key).unwrap();
+/// expander.reset();
+/// expander.expand_into(b"iv", &mut iv).unwrap();
+/// ```
+pub struct HkdfExpander(fastcrypto_core::HkdfExpander);
+
+impl core::fmt::Debug for HkdfExpander {
+    /// Deliberately opaque: it holds key material.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HkdfExpander").finish_non_exhaustive()
+    }
+}
+
+impl HkdfExpander {
+    /// Prepares an expander for the given pseudorandom key.
+    #[must_use]
+    pub fn new(prk: &[u8; 32]) -> Self {
+        Self(fastcrypto_core::HkdfExpander::new(prk, sha256_compressor()))
+    }
+
+    /// Runs the expand step, writing as many bytes as the output buffer holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::OutputTooLong` when more than 255 blocks are requested.
+    pub fn expand_into(&mut self, info: &[u8], okm: &mut [u8]) -> fastcrypto_core::Result<()> {
+        self.0.expand_into(info, okm)
+    }
+
+    /// Discards intermediate state, ready for the next label.
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
 }
 
 #[cfg(test)]
