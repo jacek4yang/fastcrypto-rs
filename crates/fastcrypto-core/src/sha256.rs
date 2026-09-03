@@ -315,18 +315,25 @@ impl Sha256 {
         // what FIPS 180-4 requires.
         let bit_len = self.len.wrapping_mul(8);
 
-        // Bytes needed: buffered tail + 0x80 delimiter + 8 length bytes.
+        // Bytes needed: buffered tail + 0x80 delimiter + 8 length bytes, so at
+        // most two blocks.
         let blocks = (self.block_len + 9).div_ceil(BLOCK_LEN);
-        let len_at = blocks * BLOCK_LEN - 8;
+
+        let used = blocks * BLOCK_LEN;
+        let len_at = used - 8;
         scratch[len_at..len_at + 8].copy_from_slice(&bit_len.to_be_bytes());
 
         let mut state = self.state;
-        let used = blocks * BLOCK_LEN;
         self.compressor.run(&mut state, &scratch[..used]);
-        // Only the bytes that were written can hold message data, so
-        // zeroizing the whole scratch would be wasted work: the volatile
-        // stores are the expensive part of a small finalize.
-        scratch[..used].zeroize();
+
+        // Only two regions of the scratch ever hold data that did not
+        // come from this function: the message tail plus the 0x80
+        // delimiter, and the eight length bytes. Everything else is a
+        // zero this function wrote. Volatile byte stores cost about
+        // 0.3 ns each, so skipping the padding is the difference
+        // between nine stores and sixty-four for an empty message.
+        scratch[..self.block_len + 1].zeroize();
+        scratch[len_at..len_at + 8].zeroize();
         for (i, word) in state.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
         }
