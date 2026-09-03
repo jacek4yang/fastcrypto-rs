@@ -40,7 +40,6 @@ fn expander_matches_rustcrypto_for_every_label() {
                     let mut a = vec![0u8; out_len];
                     let mut b = vec![0u8; out_len];
                     expander.expand_into(&label, &mut a).unwrap();
-                    expander.reset();
                     rc.expand(&label, &mut b).unwrap();
                     assert_eq!(
                         hex(&a),
@@ -71,7 +70,6 @@ fn prepared_key_reuse_equals_fresh_expansion() {
     let mut fresh = [0u8; 48];
     for label in labels {
         expander.expand_into(label, &mut reused).unwrap();
-        expander.reset();
         prk.expand_into(label, &mut fresh).unwrap();
         assert_eq!(hex(&reused), hex(&fresh), "label {label:?}");
     }
@@ -97,9 +95,7 @@ fn expander_is_backend_independent() {
             let mut a = [0u8; 42];
             let mut b = [0u8; 42];
             core_expander.expand_into(label, &mut a).unwrap();
-            core_expander.reset();
             dispatched_expander.expand_into(label, &mut b).unwrap();
-            dispatched_expander.reset();
             assert_eq!(hex(&a), hex(&b), "label {label:?}");
         }
     }

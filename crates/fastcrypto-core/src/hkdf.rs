@@ -200,6 +200,13 @@ impl HkdfExpander {
 
     /// Runs the expand step, writing as many bytes as the output buffer holds.
     ///
+    /// Each call is independent: the prepared key state is restored first, so
+    /// expanding many labels from one PRK — which is what a TLS 1.3 key
+    /// schedule does, sixteen times per handshake — needs no bookkeeping from
+    /// the caller. Restoring costs a struct rebuild from the cached ipad
+    /// state, not a re-keying, so the whole point of preparing the key is
+    /// kept.
+    ///
     /// # Errors
     ///
     /// Returns `Error::OutputTooLong` when more than 255 blocks are requested.
@@ -210,6 +217,7 @@ impl HkdfExpander {
                 max: MAX_OUTPUT_LEN,
             });
         }
+        self.hmac.reset();
 
         let requested = okm.len();
         let mut block = [0u8; DIGEST_LEN];
@@ -230,11 +238,59 @@ impl HkdfExpander {
         block.zeroize();
         Ok(())
     }
+}
 
-    /// Discards any intermediate state, leaving the prepared key state ready
-    /// for the next label.
-    pub fn reset(&mut self) {
-        self.hmac.reset();
+#[cfg(test)]
+mod expander_independence {
+    use super::{HkdfSha256, PRK_LEN};
+
+    /// Regression: expanding a second label without any caller bookkeeping.
+    ///
+    /// The expander used to carry the previous label's message state into the
+    /// next call, so the first label was right and every one after it was
+    /// silently wrong. A TLS 1.3 key schedule expands sixteen labels from one
+    /// PRK, so this produced wrong key material on every handshake after the
+    /// first derivation — with no error and no test catching it, because every
+    /// test reset in between.
+    #[test]
+    fn each_label_is_independent_without_an_explicit_reset() {
+        let prk = HkdfSha256::new(b"salt", b"input key material");
+        let labels: [&[u8]; 4] = [b"c hs traffic", b"s hs traffic", b"key", b"iv"];
+
+        let mut reused = prk.expander();
+        for label in labels {
+            let mut from_reused = [0u8; 40];
+            reused.expand_into(label, &mut from_reused).expect("expand");
+
+            let mut fresh_expander = prk.expander();
+            let mut from_fresh = [0u8; 40];
+            fresh_expander
+                .expand_into(label, &mut from_fresh)
+                .expect("expand");
+
+            let mut from_prk = [0u8; 40];
+            prk.expand_into(label, &mut from_prk).expect("expand");
+
+            assert_eq!(from_reused, from_fresh, "label {label:?} vs fresh expander");
+            assert_eq!(from_reused, from_prk, "label {label:?} vs one-shot API");
+        }
+    }
+
+    /// The same expander must also survive multi-block outputs, where the
+    /// per-block chaining is the state that previously leaked between labels.
+    #[test]
+    fn multi_block_outputs_stay_independent() {
+        let prk = HkdfSha256::new(b"salt", b"ikm");
+        let mut reused = prk.expander();
+        let mut first = [0u8; PRK_LEN * 3 + 7];
+        let mut second = [0u8; PRK_LEN * 3 + 7];
+        reused.expand_into(b"first", &mut first).expect("expand");
+        reused.expand_into(b"second", &mut second).expect("expand");
+
+        let mut expected = [0u8; PRK_LEN * 3 + 7];
+        prk.expand_into(b"second", &mut expected).expect("expand");
+        assert_eq!(second, expected);
+        assert_ne!(first, second);
     }
 }
 
@@ -348,7 +404,6 @@ mod tests {
                 let mut from_expander = alloc::vec![0u8; out_len];
                 let mut from_prk = alloc::vec![0u8; out_len];
                 expander.expand_into(&label, &mut from_expander).unwrap();
-                expander.reset();
                 prk.expand_into(&label, &mut from_prk).unwrap();
                 assert_eq!(
                     from_expander, from_prk,
@@ -369,9 +424,7 @@ mod tests {
         let mut b = [0u8; 32];
         let mut c = [0u8; 32];
         expander.expand_into(b"first", &mut a).unwrap();
-        expander.reset();
         expander.expand_into(b"second", &mut b).unwrap();
-        expander.reset();
         expander.expand_into(b"first", &mut c).unwrap();
         let mut reference = [0u8; 32];
         prk.expand_into(b"first", &mut reference).unwrap();

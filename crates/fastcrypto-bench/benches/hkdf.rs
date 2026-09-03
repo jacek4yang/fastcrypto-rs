@@ -227,7 +227,6 @@ fn multi_label_prepared_key(c: &mut criterion::Criterion) {
         b.iter(|| {
             for label in &labels {
                 expander.expand_into(black_box(label), &mut out).unwrap();
-                expander.reset();
             }
             black_box(out)
         });
