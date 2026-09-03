@@ -1,0 +1,28 @@
+# build artifacts
+/target/
+**/target/
+/fuzz/target/
+
+# criterion / benchmark output
+/criterion/
+/iai-callgrind/
+/benchmarks/raw/
+*.svg
+
+# profiling output
+*.perf.data
+*.perf.data.old
+flamegraph.svg
+callgrind.out.*
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# secrets and local configuration
+*.pem
+*.key
+.env
+.cargo/config.toml.local
