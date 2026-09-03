@@ -140,7 +140,7 @@ one a from-scratch implementation gets wrong, and it has its own test.
 SHA-NI does not accelerate the SHA-512 family, so these are portable-only and
 will stay that way until measurement says otherwise.
 
-### X25519 — `CORRECTNESS_PROVEN`, `FUZZED`, x86_64 only
+### X25519 — `PERFORMANCE_CHARACTERIZED`, `INTEGRATION_CANDIDATE`, x86_64 Linux only
 
 **The earlier "delegate it" conclusion was wrong, and the reason is worth
 keeping.** It assumed the choice was *reimplement the arithmetic or keep
@@ -162,13 +162,30 @@ revision, the exact transformation and the narrow verification claim are in
 | zeroization | all three secret types zeroize on drop; no secret bytes in any `Debug` |
 | side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` — the arithmetic is upstream's and unmodified, but no timing experiment has been recorded here |
 | generated code | the machine code `global_asm!` emits is byte-identical to GNU `as` output for all four routines |
-| performance | **not yet** `PERFORMANCE_CHARACTERIZED`: the benchmark arms exist, the measurement against `aws-lc-rs` on a quiet P-core has not been run |
-| portability | x86_64 only. AArch64 is the next port; s2n-bignum ships the ARM routines under the same licence |
+| performance | **k = 0.99–1.00** at both production shapes, on a quiet pinned P-core, measured twice (see below) |
+| portability | x86_64 **Linux** only — the imported assembly emits ELF directives. AArch64 is the next port; s2n-bignum ships the ARM routines under the same licence |
 
-**Blocker:** `k` — our time divided by `aws-lc-rs`'s, at the exact production
-shapes — is unmeasured. The gate is `k ≤ 1.05` to continue, `k ≤ 1.03` to be a
-consolidation candidate. Since both sides run the same arithmetic, anything
-worse than that is wrapper overhead and has a findable mechanism.
+**Measured against the incumbent**, i5-1240P P-core pinned with `taskset`,
+machine verified quiet, Criterion 60 samples, two runs ten minutes apart:
+
+| shape, per session | `aws-lc-rs` | fastcrypto | k |
+| --- | ---: | ---: | ---: |
+| static agreement (REALITY auth) | 17.34 µs | 17.30 µs | **0.994 / 1.000** |
+| ephemeral session (keygen + share + agree) | 24.45 µs | 24.33 µs | **0.993 / 0.995** |
+
+Parity on the first, about −0.5% on the second. Per session that is
+41.79 µs → 41.63 µs, and X25519 is 14.6% of session CPU, so **−0.06% of server
+CPU** — below any whole-product measurement floor.
+
+The verdict is therefore **`ACCEPTED_ARCHITECTURAL_CONSOLIDATION_PERFORMANCE_NEUTRAL`**,
+not a performance win, and the reason `k` is where it is is not cleverness:
+both sides run the same upstream arithmetic. The value is that ~2.6 MB of
+vendored C libcrypto and its CMake build become ~164 KB of `.text` + `.rodata`
+with no build script and no C toolchain.
+
+**Remaining blockers before `aws-lc-rs` can be removed from rust-reality:** the
+AArch64 port, a whole-product A/B on uninstrumented schedstat CPU/session, and
+a recorded side-channel review.
 
 ### AEAD (AES-GCM, ChaCha20-Poly1305) — `DELEGATED` (provisionally)
 
