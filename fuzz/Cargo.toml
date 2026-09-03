@@ -1,0 +1,38 @@
+[package]
+name = "fastcrypto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.4", features = ["derive"] }
+fastcrypto = { path = "../crates/fastcrypto" }
+sha2 = "0.11"
+hmac = "0.13"
+hkdf = "0.13"
+
+# fastcrypto-fuzz is a separate workspace: it must never be built by the main
+# workspace, and it must never become a dependency of the library.
+[workspace]
+
+[[bin]]
+name = "sha256"
+path = "fuzz_targets/sha256.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hkdf_sha256"
+path = "fuzz_targets/hkdf_sha256.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
