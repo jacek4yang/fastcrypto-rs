@@ -50,8 +50,8 @@ Honest, and it matters more than the layering diagram:
 
 | primitive | implemented here | vs rust-reality's incumbent |
 | --- | --- | --- |
-| SHA-256 (portable + x86 SHA-NI) | yes | not yet measured against RustCrypto `sha2` **on the shapes and hardware rust-reality uses** |
-| HMAC-SHA256 | yes | not yet measured against the incumbent |
+| SHA-256 (portable + x86 SHA-NI) | yes | measured against RustCrypto `sha2`, and **slower at every size**: +83% at 32 B, +4.9% at 1400 B, parity only at 64 KiB |
+| HMAC-SHA256 | yes | inherits the SHA-256 small-input deficit |
 | HKDF-SHA256 (+ prepared-key expander) | yes | this repository's own numbers put it **~29% slower than RustCrypto `hkdf`** on the TLS-shaped workload |
 | SHA-384 / SHA-512, HMAC over them | no | rust-reality uses them per session |
 | X25519, AES-GCM, ChaCha20-Poly1305, Ed25519, ML-KEM | benchmark harness only | — |
