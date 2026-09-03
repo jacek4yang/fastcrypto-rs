@@ -70,11 +70,30 @@ Portable implementation plus an x86_64 SHA-NI backend selected at runtime.
 | `no_std`, allocation-free | yes |
 | zeroization | finalize zeroizes only what it wrote; buffer high-water mark tracked |
 | side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` (SHA-256 has no secret-dependent control flow by construction, but no review has been recorded) |
-| performance | **not** `PERFORMANCE_CHARACTERIZED`. Existing numbers are from a shared cloud container and compare against ring/aws-lc-rs, **not** against RustCrypto `sha2` — which is rust-reality's incumbent and which wins on SHA-NI hardware |
+| performance | **not** `PERFORMANCE_CHARACTERIZED` — but the incumbent comparison **has** been run, and fastcrypto loses at every measured size (see below) |
 
-**Blocker:** the comparison that matters has not been run. rust-reality
-`benches/crypto_providers.rs` already measures the exact shapes; the missing
-work is running fastcrypto against it on a real host.
+**Measured against the incumbent, SHA-NI on both sides** (AMD EPYC 9K65, shared
+container, so directional):
+
+| input | fastcrypto | RustCrypto `sha2` | fastcrypto is |
+| ---: | ---: | ---: | --- |
+| 0 B | 97.5 ns | 58.6 ns | **+66%** |
+| 32 B | 104.4 ns | 57.2 ns | **+83%** |
+| 512 B | 378.8 ns | 326.1 ns | +16% |
+| 1400 B | 871.8 ns | 830.8 ns | +4.9% |
+| 64 KiB | 36,097 ns | 35,949 ns | +0.4% |
+
+Parity arrives only at sizes rust-reality never hashes. **Its inputs are the
+small ones** — a 517 B ClientHello, a ~944 B transcript absorbed in six chunks
+of 6–517 B, and 32 B HMAC inputs — which is exactly where fastcrypto is 66–83%
+behind. The gap is fixed per-call overhead, not compression throughput.
+
+**Blocker:** the deficit is at small inputs. Closing it is a specific,
+tractable problem (initialisation and finalisation cost, not the round
+function), but until it closes, SHA-256 is not an integration candidate. What
+has still never been measured is rust-reality's *shapes* — the incremental
+transcript with clone snapshots, and 16 Expand-Label calls from one PRK — on a
+dedicated host.
 
 ### HMAC-SHA256 — `RESEARCH_ONLY`
 
@@ -135,8 +154,8 @@ High implementation risk, no measured headroom. Mature implementation stays.
 | gap | consequence |
 | --- | --- |
 | no measurement on a dedicated host | every recorded number is directional only |
-| never compared against RustCrypto for SHA/HMAC/HKDF | the comparison that decides integration has not happened |
-| no AMD evidence | the deployment target is Zen 1 and Zen 3 |
+| never measured at rust-reality's *shapes* | the incremental transcript (6 updates, 4 clone snapshots) and the 16-labels-from-one-PRK schedule are the operations that decide integration |
+| small-input deficit unclosed | rust-reality's inputs are 32–1400 B, where fastcrypto trails the incumbent by 5–83% |
 | no whole-product A/B | no primitive can be accepted without one |
 | no side-channel review recorded | required before anything ships |
 | SHA-384/512 absent | rust-reality needs both per session |
