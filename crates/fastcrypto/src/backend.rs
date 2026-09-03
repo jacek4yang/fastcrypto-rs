@@ -88,11 +88,19 @@ mod tests {
         assert_eq!(Backend::Portable.to_string(), Backend::Portable.name());
     }
 
+    /// Dispatch must select a hardware backend exactly when one both exists
+    /// *and* is implemented.
+    ///
+    /// The earlier form of this test asserted that hardware support always
+    /// implies a non-portable backend. That is false on AArch64, which reports
+    /// its ARMv8 SHA-2 instructions while no backend uses them yet — and it
+    /// went unnoticed because nothing ran this suite on AArch64 until the
+    /// QEMU runner arrived with the X25519 port.
     #[test]
-    fn sha256_backend_matches_hardware() {
+    fn sha256_dispatches_to_the_backend_that_exists() {
         let backend = Backend::for_sha256();
-        if Backend::sha256_hardware_support() {
-            assert_ne!(backend, Backend::Portable);
+        if cfg!(target_arch = "x86_64") && Backend::sha256_hardware_support() {
+            assert_eq!(backend, Backend::X86ShaNi);
         } else {
             assert_eq!(backend, Backend::Portable);
         }

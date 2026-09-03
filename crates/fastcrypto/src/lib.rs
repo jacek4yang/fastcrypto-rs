@@ -49,7 +49,10 @@ extern crate alloc;
 
 pub mod backend;
 pub mod dispatch;
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub mod x25519;
 
 pub use dispatch::{

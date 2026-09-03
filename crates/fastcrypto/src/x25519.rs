@@ -28,15 +28,21 @@
 //!
 //! # Availability
 //!
-//! Present on x86_64 only, where [`fastcrypto_x86::x25519`] supplies the
-//! implementation. An AArch64 backend is the next port; until it exists this
-//! module is deliberately absent rather than silently slow, because
-//! rust-reality's release matrix contains no other architecture and a portable
-//! placeholder would be a 1.85x regression pretending to be a fallback.
+//! x86_64 and AArch64 Linux, which is rust-reality's entire release matrix.
+//! The architecture crates supply s2n-bignum's assembly; there is deliberately
+//! **no portable fallback**, because a portable X25519 measured 1.85x the
+//! incumbent and would be a regression pretending to be a fallback. On any
+//! other target this module is absent, which is a compile error at the call
+//! site rather than a silent slowdown.
 
 use core::fmt;
 
 use zeroize::Zeroize;
+
+#[cfg(target_arch = "aarch64")]
+use fastcrypto_aarch64::x25519 as backend;
+#[cfg(target_arch = "x86_64")]
+use fastcrypto_x86::x25519 as backend;
 
 /// Length of a private key, a public key and a shared secret, in bytes.
 pub const KEY_LEN: usize = 32;
@@ -96,7 +102,7 @@ impl StaticSecret {
     #[must_use]
     pub fn public_key(&self) -> [u8; KEY_LEN] {
         let mut public = [0_u8; KEY_LEN];
-        fastcrypto_x86::x25519::x25519_base(&mut public, &self.0);
+        backend::x25519_base(&mut public, &self.0);
         public
     }
 
@@ -147,7 +153,7 @@ impl EphemeralSecret {
     #[must_use]
     pub fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
         let mut public_key = [0_u8; KEY_LEN];
-        fastcrypto_x86::x25519::x25519_base(&mut public_key, &bytes);
+        backend::x25519_base(&mut public_key, &bytes);
         Self {
             secret: bytes,
             public_key,
@@ -193,7 +199,7 @@ impl Drop for EphemeralSecret {
 /// The one agreement path, shared by both secret types.
 fn agree(secret: &[u8; KEY_LEN], peer_public_key: &[u8; KEY_LEN]) -> Option<SharedSecret> {
     let mut agreed = SharedSecret([0_u8; KEY_LEN]);
-    fastcrypto_x86::x25519::x25519(&mut agreed.0, secret, peer_public_key);
+    backend::x25519(&mut agreed.0, secret, peer_public_key);
     if is_zero(&agreed.0) {
         None
     } else {
@@ -216,7 +222,7 @@ fn is_zero(bytes: &[u8; KEY_LEN]) -> bool {
 /// Which X25519 implementation this machine runs. Reporting only.
 #[must_use]
 pub fn backend_name() -> &'static str {
-    fastcrypto_x86::x25519::variant().name()
+    backend::variant().name()
 }
 
 #[cfg(test)]

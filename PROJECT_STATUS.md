@@ -140,7 +140,7 @@ one a from-scratch implementation gets wrong, and it has its own test.
 SHA-NI does not accelerate the SHA-512 family, so these are portable-only and
 will stay that way until measurement says otherwise.
 
-### X25519 — `PERFORMANCE_CHARACTERIZED`, `INTEGRATION_CANDIDATE`, x86_64 Linux only
+### X25519 — `PERFORMANCE_CHARACTERIZED`, `INTEGRATION_CANDIDATE`
 
 **The earlier "delegate it" conclusion was wrong, and the reason is worth
 keeping.** It assumed the choice was *reimplement the arithmetic or keep
@@ -156,14 +156,14 @@ revision, the exact transformation and the narrow verification claim are in
 
 | property | state |
 | --- | --- |
-| correctness | RFC 7748 §5.2 and §6.1 including the 1,000-iteration vector; differential against **both** `aws-lc-rs` and `x25519-dalek` over randomised secrets, randomised peer encodings, the ignored high bit and the canonical low-order points |
+| correctness | RFC 7748 §5.2 and §6.1 including the 1,000-iteration vector, on **both** architectures and **all four** compiled variants; differential against **both** `aws-lc-rs` and `x25519-dalek` over randomised secrets, randomised peer encodings, the ignored high bit and the canonical low-order points (x86_64) |
 | fuzzing | `FUZZED` — differential target against `x25519-dalek` |
 | `no_std`, allocation-free | yes; entropy is the caller's, so the primitive takes 32 bytes rather than an RNG |
 | zeroization | all three secret types zeroize on drop; no secret bytes in any `Debug` |
 | side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` — the arithmetic is upstream's and unmodified, but no timing experiment has been recorded here |
-| generated code | the machine code `global_asm!` emits is byte-identical to GNU `as` output for all four routines |
+| generated code | the machine code `global_asm!` emits is byte-identical to GNU `as` output on both architectures, for every routine's `.text` and every `.rodata` table |
 | performance | **k = 0.99–1.00** at both production shapes, on a quiet pinned P-core, measured twice (see below) |
-| portability | x86_64 **Linux** only — the imported assembly emits ELF directives. AArch64 is the next port; s2n-bignum ships the ARM routines under the same licence |
+| portability | **x86_64 and AArch64 Linux** — rust-reality's entire release matrix. The imported assembly emits ELF directives, so Linux is the bound. There is deliberately no portable fallback: a portable X25519 measures 1.85x and would be a regression pretending to be one |
 
 **Measured against the incumbent**, i5-1240P P-core pinned with `taskset`,
 machine verified quiet, Criterion 60 samples, two runs ten minutes apart:
@@ -183,9 +183,16 @@ both sides run the same upstream arithmetic. The value is that ~2.6 MB of
 vendored C libcrypto and its CMake build become ~164 KB of `.text` + `.rodata`
 with no build script and no C toolchain.
 
-**Remaining blockers before `aws-lc-rs` can be removed from rust-reality:** the
-AArch64 port, a whole-product A/B on uninstrumented schedstat CPU/session, and
-a recorded side-channel review.
+AArch64 runs the same import: s2n-bignum's ARM routines, both variants,
+dispatched on `MIDR_EL1` exactly as AWS-LC dispatches them. This repository has
+no ARM hardware, so those tests execute real AArch64 instructions under
+user-mode QEMU rather than being compile-checked — CI does the same.
+**Unmeasured on ARM:** `k`, because emulation cannot produce a timing.
+
+**Remaining blockers before `aws-lc-rs` can be removed from rust-reality:** a
+whole-product A/B on uninstrumented schedstat CPU/session, a recorded
+side-channel review, and an AArch64 `k` measurement on real ARM hardware if one
+becomes available.
 
 ### AEAD (AES-GCM, ChaCha20-Poly1305) — `DELEGATED` (provisionally)
 

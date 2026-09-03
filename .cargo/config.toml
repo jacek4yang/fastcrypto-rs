@@ -1,0 +1,13 @@
+# Cross-running the AArch64 tests.
+#
+# The AArch64 X25519 backend is imported assembly, so "it compiles" is not
+# evidence about it. This repository has no ARM hardware, so the tests run
+# under user-mode QEMU instead, which executes the real instructions and gives
+# real RFC 7748 answers. `cargo test --target aarch64-unknown-linux-gnu` picks
+# this up automatically.
+#
+# Needs `gcc-aarch64-linux-gnu` and `qemu-user` (Debian/Ubuntu package names).
+# The `-L` prefix is where those packages put the AArch64 dynamic loader.
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+runner = ["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"]
