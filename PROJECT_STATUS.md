@@ -91,11 +91,11 @@ value from the RFC text was then used verbatim. That is the intended workflow.
 
 Full tables in ``benchmarks/results/``. Headline numbers:
 
-* SHA-256 one-shot at 64 KiB: **225.9 us** for us vs **35.9 us** for the
-  SHA-NI-backed implementations (6.3x). At 0 B: 282 ns vs 58-79 ns.
+* SHA-256 one-shot at 64 KiB: **190.9 us** for us vs **36.0 us** for the
+  SHA-NI-backed implementations (5.3x). At 0 B: 254.6 ns vs 58-79 ns.
 * Portable-vs-portable (RustCrypto forced to its soft backend): ours is
-  **1.5x slower** at 64 KiB - about 12.3 vs 8.1 cycles/byte on the estimated
-  3.69 GHz clock.
+  **1.27x slower** at 64 KiB - about 10.2 vs 8.1 cycles/byte on the estimated
+  3.69 GHz clock. It was 1.52x before the schedule rework.
 * HKDF-SHA256 extract+expand to 88 bytes: 4346 ns vs 650 ns (RustCrypto) and
   796 ns (ring).
 * AEAD and X25519 groups contain **reference numbers only**; those primitives
@@ -108,56 +108,50 @@ implementation is slower at every size.
 
 ## Current bottlenecks, in priority order
 
-0. **Evidence from instruction counts.** Callgrind says one SHA-256 of 8192
-   bytes costs 594k instructions for us, 341k for ring. That is only 1.7x
-   more instructions for 6x more time, so the portable loop is not just
-   doing more work - it is doing the work badly (dependency chains and
-   spilling). Instruction count and cycles-per-instruction both need to
-   come down.
+1. **No hardware-accelerated path (~5.3x at 64 KiB).** Every competitor in the
+   lab uses Intel SHA Extensions on this CPU. The feature probe already reports
+   `sha=true`, the cached CPUID path exists, and the dispatch seam
+   (`fastcrypto::backend::Backend`) is in place, so this is implementation work,
+   not design work.
+2. **Remaining portable headroom (~1.27x).** Against RustCrypto's soft backend
+   we now run about 10.2 cycles/byte versus 8.1 at 64 KiB (it was 12.3 before
+   the schedule rework). Worth another pass only after the SHA-NI path exists,
+   because that is where the order of magnitude is.
+3. **Fixed per-call cost (254.6 ns for a 0-byte digest).** One compression of a
+   64-byte block dominates; the padding path adds a 128-byte stack scratch plus
+   volatile zeroization. This is the number to attack for handshake-sized
+   inputs once SHA-NI lands.
+4. **Zeroization cost on construction (19.5 ns vs 2.4 ns).** `Sha256` zeroizes on
+   drop (9 words + 64-byte block, volatile writes). Deliberate trade-off; it is
+   now a larger share of small-message cost than before, because the hash got
+   cheaper.
 
-1. **Message schedule materialization (portable, ~1.5x).** `compress` builds a
-   `[u32; 64]` schedule on the stack before running 64 rounds. At 64 KiB the
-   cost is about 12.3 cycles/byte against about 8.1 for RustCrypto's soft
-   backend on the same compiler with no SIMD. The hypothesis is register
-   pressure and store-to-load forwarding on the schedule array; the fix is a
-   16-word circular schedule with the round body restructured so the eight
-   working variables stay in registers. Needs a profile to confirm before any
-   code changes.
-2. **No hardware-accelerated path (~6x).** Every competitor here uses SHA-NI.
-   The CPU reports `sha=true`, the cached CPUID probe is in place, and the
-   dispatch seam (`fastcrypto::backend::Backend`) already exists, so this is
-   implementation work, not design work.
-3. **Fixed per-call cost (282 ns for a 0-byte digest).** One compression of a
-   64-byte block dominates. It shrinks with bottlenecks 1 and 2, and by
-   trimming the padding path (a 128-byte scratch buffer plus volatile
-   zeroization per call).
-4. **Zeroization cost on construction (19.8 ns vs 2.4 ns).** `Sha256` zeroizes
-   on drop (9 words + 64-byte block, volatile writes). Deliberate trade-off;
-   revisit once the hash itself is fast enough for this to matter.
+## Optimization log
+
+Every optimization attempt is recorded with its measurement, including the ones
+that were reverted:
+
+* `benchmarks/results/2026-09-03-sha256-message-schedule.md` - portable
+  schedule rework: five variants, two rejected (one of them faster on 64 KiB
+  but slower on a single block), net -6.2% to -21.6% per size.
 
 ## Next concrete optimization task
 
-**Profile and restructure the portable SHA-256 compression function.** Ordered
-steps, each with its own commit, tests, and benchmark run:
+**Implement the x86_64 SHA-NI backend.** Ordered steps, each with its own
+commit, tests and benchmark run:
 
-1. Record the current state as the baseline (already in
-   ``benchmarks/results/``).
-2. Profile: `cargo bench -p fastcrypto-bench --bench micro` for instruction
-   counts (Valgrind/Callgrind, deterministic), and
-   `perf record/report` if available, to confirm that the schedule array -
-   not the round arithmetic - is the cost.
-3. Rewrite `compress` with a 16-word circular message schedule; keep the
-   64-round loop but restructure the round body so the working variables stay
-   live in registers.
-4. Keep the always-inlined compression only if the measurement still supports
-   it.
-5. Re-run `cargo test --workspace` (KAT plus differential) and
-   `cargo bench -p fastcrypto-bench --bench sha256`.
-6. Keep the change only if every size improves and nothing regresses; otherwise
+1. Baseline is recorded (this status file plus the results directory).
+2. Add `fastcrypto-x86::sha256` implementing the compression with
+   `sha256msg1`/`sha256msg2`/`sha256rnds2` (plus `pshufd`/`palignr` for the
+   schedule), gated on `Features::cached().sha_ni()`, every `unsafe` block
+   carrying a SAFETY comment and the target-feature invariant.
+3. Wire it into `fastcrypto` dispatch so `Backend::for_sha256()` reports
+   `X86ShaNi` when it is selected, keeping the portable path as the fallback.
+4. Verify: every length in 0..300 and random inputs must produce identical
+   digests from both paths; add that as a differential test, not just a check.
+5. Benchmark the full ladder. Keep only if every size improves; otherwise
    revert and record why.
-
-After that: the x86_64 SHA-NI backend behind the existing CPUID gate, verified
-against the portable path for every length in 0..300 and for random inputs.
+6. Then the AArch64 ARMv8 SHA-2 backend behind the existing probe.
 
 ## Reproducing everything here
 

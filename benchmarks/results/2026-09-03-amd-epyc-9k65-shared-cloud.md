@@ -9,6 +9,12 @@ Harness: Criterion 0.8, warmup 500 ms, measurement 1500 ms, 60 samples, 95%
 confidence interval, byte throughput annotation. Numbers below are the mean
 point estimates in nanoseconds; MB/s is computed from the same estimate.
 
+**Update 2026-09-03 (later the same day):** the SHA-256 numbers below are the
+pre-optimization baseline. The portable message schedule was restructured
+afterwards (-6% to -22%, see
+[2026-09-03-sha256-message-schedule.md](2026-09-03-sha256-message-schedule.md)).
+Everything else in this file is current.
+
 ## Environment
 
 ```

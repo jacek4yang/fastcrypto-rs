@@ -310,21 +310,25 @@ pub fn sha256(data: &[u8]) -> [u8; DIGEST_LEN] {
 /// `#[inline(always)]` is deliberate: this is the entire hot loop, and a
 /// non-inlined copy costs a call per 64-byte block.
 // The compression function is the entire hot loop; keeping it out of line
-// costs a call per 64-byte block. See `benchmarks/results/` for measurements.
+// costs a call per 64-byte block. See benchmarks/results/ for measurements.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_LEN]) {
-    let mut w = [0u32; 64];
+    // Circular 16-word message schedule.
+    //
+    // The FIPS 180-4 recurrence only ever looks 16 words back, so the schedule
+    // is kept in a 16-slot ring instead of a [u32; 64] array: at round i the
+    // slot holding w[i] is refilled with w[i+16] immediately after it is
+    // consumed. The whole schedule therefore stays in registers instead of
+    // living on the stack, which is where the first portable implementation
+    // spent its time (measured: 12.3 vs 8.1 cycles/byte against a portable
+    // reference; see benchmarks/results/).
+    //
+    // The last 16 rounds compute a schedule word that is never used. That costs
+    // about 16 * 7 arithmetic ops per block and removes a branch per round.
+    let mut w = [0u32; 16];
     for (i, chunk) in block.chunks_exact(4).enumerate() {
         w[i] = u32::from_be_bytes(chunk.try_into().expect("chunks_exact(4) yields 4 bytes"));
-    }
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
     }
 
     let mut a = state[0];
@@ -336,25 +340,42 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_LEN]) {
     let mut g = state[6];
     let mut h = state[7];
 
-    for i in 0..64 {
-        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ ((!e) & g);
-        let t1 = h
-            .wrapping_add(s1)
-            .wrapping_add(ch)
-            .wrapping_add(K[i])
-            .wrapping_add(w[i]);
-        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
+    // Four groups of sixteen rounds. Inside a group the message word index is
+    // the inner counter itself, so after unrolling every index is a constant
+    // and the schedule stays in registers. The fourth group computes no new
+    // schedule words, because no round consumes them.
+    for j in 0..4 {
+        for k in 0..16 {
+            let round = j * 16 + k;
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[round])
+                .wrapping_add(w[k]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+
+            if j < 3 {
+                let y = w[(k + 1) & 15];
+                let z = w[(k + 9) & 15];
+                let v = w[(k + 14) & 15];
+                let sig0 = y.rotate_right(7) ^ y.rotate_right(18) ^ (y >> 3);
+                let sig1 = v.rotate_right(17) ^ v.rotate_right(19) ^ (v >> 10);
+                w[k] = w[k].wrapping_add(sig0).wrapping_add(z).wrapping_add(sig1);
+            }
+        }
     }
 
     state[0] = state[0].wrapping_add(a);
