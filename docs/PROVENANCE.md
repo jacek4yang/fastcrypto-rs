@@ -218,6 +218,71 @@ Until a timing experiment is recorded, the honest phrasing is "no
 secret-dependent control flow was found by source review", not "constant-time
 verified".
 
+### 2. X25519 scalar multiplication, AArch64
+
+| field | content |
+| --- | --- |
+| primitive | X25519 variable-base and fixed-base scalar multiplication, AArch64 only |
+| upstream project | s2n-bignum |
+| upstream URL | <https://github.com/awslabs/s2n-bignum> |
+| commit / tag | `7948ca132c8cdd22fbd7372bd14a4f4ae0a2da7c` — the same revision as entry 1 |
+| source paths | `arm/curve25519/curve25519_x25519_byte{,_alt}.S`, `arm/curve25519/curve25519_x25519base_byte{,_alt}.S`, `include/_internal_s2n_bignum_arm.h`, `LICENSE` |
+| license | `Apache-2.0 OR ISC OR MIT-0`, declared in `LICENSE` and repeated as an SPDX header in every imported `.S` |
+| notices | `Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.` retained verbatim, together with upstream's own attribution comment naming the two projects below; the full upstream `LICENSE` is vendored at `crates/fastcrypto-aarch64/src/x25519/upstream/LICENSE` |
+| copied | all four routines, byte-for-byte, as `crates/fastcrypto-aarch64/src/x25519/upstream/*.S` |
+| rewritten | nothing |
+| structural changes | macro expansion and symbol namespacing, by the same pinned pipeline as entry 1; a Rust wrapper adds MIDR-based dispatch and the RFC 7748 §6.1 zero check |
+| verification status | no upstream proof is claimed. See below. |
+
+**The attribution chain is longer here, and collapsing it would be wrong.**
+Upstream's own header states that this code is *substantially derived from*:
+
+| project | URL | license |
+| --- | --- | --- |
+| Emil Lenngren's X25519-AArch64 | <https://github.com/Emill/X25519-AArch64> | **CC0-1.0** (public domain dedication) |
+| the SLOTHY re-scheduling of it, by Abdulrahman, Becker, Kannwischer and Klein | <https://github.com/slothy-optimizer/slothy> | **MIT** (Arm Limited, Hanno Becker, Amin Abdulrahman, Matthias Kannwischer) |
+
+Both were checked at import time and both are permissive and compatible. The
+chain is recorded because "it is Apache-2.0 because Amazon says so" is not a
+licence review — the question is whether *everything it descends from* permits
+this use, and here it does.
+
+**Why both variants ship.** Unlike x86_64, neither AArch64 variant needs an
+optional instruction: both execute on every ARMv8 CPU, and the `_alt` routines
+are simply tuned for cores with a wide multiplier. Dispatch mirrors AWS-LC's
+`use_s2n_bignum_alt()` — read `MIDR_EL1` (guarded by `HWCAP_CPUID`, because the
+`MRS` would fault where the kernel does not emulate ID-register reads) and take
+`_alt` for Neoverse V1, V2 and V3. AWS-LC also prefers `_alt` on Apple silicon,
+but reaches that conclusion through a macOS `sysctl`, not through MIDR on Linux;
+this port does not add a rule it cannot test. A failed probe selects the
+standard routines, which is always correct — the worst case is unclaimed
+throughput, never an illegal instruction.
+
+**ABI.** AAPCS64: `X0` = result, `X1` = scalar, `X2` = point, no return value,
+callee-saved registers and stack frame managed by the routine, result must not
+alias either input. Little-endian 32-byte encodings; the scalar is clamped
+internally; the §6.1 zero check is the caller's.
+
+**Verification status, stated narrowly.** As with entry 1, upstream's
+machine-checked proofs cover upstream's build and are not claimed here. What is
+demonstrated:
+
+- the machine code `global_asm!` emits is **byte-identical** to
+  `aarch64-linux-gnu-as` output, for all four routines' `.text` and both
+  `.rodata` tables;
+- RFC 7748 §5.2 and §6.1 vectors pass, including the 1,000-iteration one, **for
+  both variants**, executed on real AArch64 instructions under user-mode QEMU
+  rather than merely compiled;
+- the committed assembly is the mechanical expansion of the vendored upstream,
+  checked by a test;
+- the vendored upstream is pinned by SHA-256, checked by a test.
+
+Differential testing against `aws-lc-rs` and `x25519-dalek` runs on x86_64. On
+AArch64 the same *implementation* is exercised against RFC 7748 vectors and
+against the other variant, which is weaker, and that difference is deliberate:
+cross-building the C incumbent for AArch64 to run it under emulation would
+compare two emulated implementations rather than validate ours.
+
 ## Candidate upstreams and their licenses
 
 Recorded now so the licensing question is answered before the engineering

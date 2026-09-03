@@ -446,6 +446,9 @@ dependencies = [
 [[package]]
 name = "fastcrypto-aarch64"
 version = "0.1.0"
+dependencies = [
+ "fastcrypto-core",
+]
 
 [[package]]
 name = "fastcrypto-bench"

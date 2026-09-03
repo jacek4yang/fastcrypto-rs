@@ -14,14 +14,14 @@ zeroize = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fastcrypto-x86 = { workspace = true }
 
-# Optional because it is only meaningful on aarch64; the `std` feature
-# turns on the platform feature probe there.
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-fastcrypto-aarch64 = { workspace = true, optional = true }
+fastcrypto-aarch64 = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["fastcrypto-core/std", "fastcrypto-aarch64", "fastcrypto-aarch64?/std"]
+# The aarch64 crate's `std` feature only turns on its SHA-2 feature probe; the
+# X25519 backend it also provides is no_std and always present.
+std = ["fastcrypto-core/std", "fastcrypto-aarch64/std"]
 
 [lints]
 workspace = true

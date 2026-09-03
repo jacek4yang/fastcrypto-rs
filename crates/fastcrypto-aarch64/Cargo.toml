@@ -8,6 +8,7 @@ authors.workspace = true
 description = "AArch64 backend (feature detection and SIMD primitives) for fastcrypto-rs"
 
 [dependencies]
+fastcrypto-core = { workspace = true }
 
 [features]
 default = []

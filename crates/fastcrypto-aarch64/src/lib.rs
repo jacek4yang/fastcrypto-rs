@@ -3,10 +3,12 @@
 //!
 //! # Scope
 //!
-//! Like the x86_64 backend, this crate currently provides the dispatch
-//! foundation only. The first primitive that will use it is SHA-256 with the
-//! ARMv8 SHA-2 instructions, deferred until the portable baseline has been
-//! profiled (see ``PROJECT_STATUS.md``).
+//! * feature detection for the ARMv8 SHA-2 instructions, whose SHA-256 backend
+//!   is deferred until the portable baseline has been profiled (see
+//!   ``PROJECT_STATUS.md``);
+//! * `x25519` — X25519, from s2n-bignum's assembly, integrated with
+//!   `global_asm!` so that it needs no build script and no C toolchain.
+//!   AArch64 Linux only, because the imported assembly emits ELF directives.
 //!
 //! # Detection and no_std
 //!
@@ -22,6 +24,9 @@
 //! Both modes share the same cached, allocation-free API.
 
 #![no_std]
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub mod x25519;
 
 // Only needed for the optional platform feature probe.
 #[cfg(feature = "std")]

@@ -53,7 +53,7 @@ Honest, and it matters more than the layering diagram:
 | SHA-256 (portable + x86 SHA-NI) | yes | portable round function now **−187 cycles at 517 B** and **−149 at 1400 B** against RustCrypto `sha2`; +38 to +97 cycles at 0–32 B, which is ~0.03% of a session and is where this work stops |
 | HMAC-SHA256, HKDF-SHA256 | yes | not re-measured since the SHA-256 fix; the recorded HKDF deficit is stale rather than refuted |
 | SHA-384 / SHA-512, HMAC-SHA384/512, HKDF-SHA384 | yes | rust-reality performs all of them per session; SHA-NI does not accelerate this family |
-| X25519 (x86_64 Linux) | yes — s2n-bignum's assembly, imported | **k = 0.99–1.00** against `aws-lc-rs` at both production shapes; parity, with ~2.6 MB of C libcrypto replaced by ~164 KB and no build script |
+| X25519 (x86_64 + AArch64 Linux) | yes — s2n-bignum's assembly, imported | **k = 0.99–1.00** against `aws-lc-rs` at both production shapes on x86_64; parity, with ~2.6 MB of C libcrypto replaced by ~164 KB and no build script. AArch64 is correctness-verified under QEMU, not timed |
 | AES-GCM, ChaCha20-Poly1305, Ed25519, ML-KEM | benchmark harness only | — |
 
 The recorded numbers under `benchmarks/results/` were taken in a **shared
