@@ -183,6 +183,13 @@ pub struct Sha256 {
     block_len: usize,
     /// Total number of bytes absorbed so far.
     len: u64,
+    /// High-water mark of how much of `block` has ever been written.
+    ///
+    /// Byte positions above it still hold the zero the buffer was created
+    /// with, so they need no volatile zeroization on drop. Whole blocks are
+    /// compressed straight from the caller slice and never touch `block`,
+    /// so a full-block message leaves the mark at zero.
+    block_filled: usize,
     /// Backend selected for this instance.
     compressor: Compressor,
 }
@@ -206,15 +213,16 @@ impl core::fmt::Debug for Sha256 {
 impl Drop for Sha256 {
     fn drop(&mut self) {
         self.state.zeroize();
-        self.block.zeroize();
+        self.block[..self.block_filled].zeroize();
     }
 }
 
 impl Zeroize for Sha256 {
     fn zeroize(&mut self) {
         self.state.zeroize();
-        self.block.zeroize();
+        self.block[..self.block_filled].zeroize();
         self.block_len = 0;
+        self.block_filled = 0;
         self.len = 0;
     }
 }
@@ -234,6 +242,7 @@ impl Sha256 {
             block: [0u8; BLOCK_LEN],
             block_len: 0,
             len: 0,
+            block_filled: 0,
             compressor,
         }
     }
@@ -251,6 +260,7 @@ impl Sha256 {
             block: [0u8; BLOCK_LEN],
             block_len: 0,
             len: consumed,
+            block_filled: 0,
             compressor,
         }
     }
@@ -269,6 +279,7 @@ impl Sha256 {
             let take = core::cmp::min(BLOCK_LEN - self.block_len, data.len());
             self.block[self.block_len..self.block_len + take].copy_from_slice(&data[..take]);
             self.block_len += take;
+            self.block_filled = self.block_filled.max(self.block_len);
             data = &data[take..];
             if self.block_len < BLOCK_LEN {
                 return;
@@ -290,6 +301,7 @@ impl Sha256 {
         if !tail.is_empty() {
             self.block[..tail.len()].copy_from_slice(tail);
             self.block_len = tail.len();
+            self.block_filled = self.block_filled.max(tail.len());
         }
     }
 
@@ -343,8 +355,9 @@ impl Sha256 {
     /// Resets the hasher back to the initial state.
     pub fn reset(&mut self) {
         self.state = INITIAL_STATE;
-        self.block.zeroize();
+        self.block[..self.block_filled].zeroize();
         self.block_len = 0;
+        self.block_filled = 0;
         self.len = 0;
     }
 

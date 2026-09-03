@@ -53,6 +53,45 @@ fn oneshot(c: &mut criterion::Criterion) {
     group.finish();
 }
 
+/// Padding-boundary sizes: the lengths around the 55/56/64 and 119/120/128
+/// byte edges where the padding path changes shape. These are the sizes a TLS
+/// implementation actually hits for small handshake structures and labels.
+fn padding_boundaries(c: &mut criterion::Criterion) {
+    const BOUNDARIES: &[usize] = &[
+        55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 191, 192, 193,
+    ];
+    let mut group = c.benchmark_group("sha256/padding-boundaries");
+    for &len in BOUNDARIES {
+        group.throughput(common::throughput(len));
+        let data = common::message(len);
+        let id = common::label(len);
+
+        group.bench_with_input(BenchmarkId::new("fastcrypto", &id), &data, |b, data| {
+            b.iter(|| black_box(fastcrypto::sha256(black_box(data))));
+        });
+        group.bench_with_input(BenchmarkId::new("ring", &id), &data, |b, data| {
+            b.iter(|| black_box(ring::digest::digest(&ring::digest::SHA256, black_box(data))));
+        });
+        group.bench_with_input(BenchmarkId::new("aws-lc-rs", &id), &data, |b, data| {
+            b.iter(|| {
+                black_box(aws_lc_rs::digest::digest(
+                    &aws_lc_rs::digest::SHA256,
+                    black_box(data),
+                ))
+            });
+        });
+        group.bench_with_input(
+            BenchmarkId::new("rustcrypto-sha2", &id),
+            &data,
+            |b, data| {
+                use sha2::Digest;
+                b.iter(|| black_box(sha2::Sha256::digest(black_box(data))));
+            },
+        );
+    }
+    group.finish();
+}
+
 fn streaming(c: &mut criterion::Criterion) {
     use sha2::Digest;
 
@@ -120,6 +159,6 @@ fn init_cost(c: &mut criterion::Criterion) {
 criterion_group! {
     name = benches;
     config = common::criterion();
-    targets = oneshot, streaming, init_cost
+    targets = oneshot, padding_boundaries, streaming, init_cost
 }
 criterion_main!(benches);
