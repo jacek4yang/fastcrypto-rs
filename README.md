@@ -35,7 +35,7 @@ are strong and were selected on evidence:
 
 | primitive | rust-reality's current provider | why it is there |
 | --- | --- | --- |
-| X25519 (per session, ×2) | `aws-lc-rs` | measured **−12.3% server CPU per session**; 2.41x on variable-base agreement |
+| X25519 (per session, ×3) | `aws-lc-rs` | measured **−12.3% server CPU per session**; 2.41x on variable-base agreement |
 | AES-128/256-GCM, ChaCha20-Poly1305 | `ring` | faster than `aws-lc-rs` at every measured record size |
 | SHA-256/384, HMAC, HKDF | RustCrypto (`sha2`/`hmac`/`hkdf`) | on SHA-NI hardware `ring` is **9.8% slower per session**; RustCrypto wins |
 | Ed25519 | `ed25519-dalek` | the only `no_std`-clean option; `ring` is 23–40% slower |
@@ -50,15 +50,15 @@ Honest, and it matters more than the layering diagram:
 
 | primitive | implemented here | vs rust-reality's incumbent |
 | --- | --- | --- |
-| SHA-256 (portable + x86 SHA-NI) | yes | measured against RustCrypto `sha2`, and **slower at every size**: +83% at 32 B, +4.9% at 1400 B, parity only at 64 KiB |
-| HMAC-SHA256 | yes | inherits the SHA-256 small-input deficit |
-| HKDF-SHA256 (+ prepared-key expander) | yes | this repository's own numbers put it **~29% slower than RustCrypto `hkdf`** on the TLS-shaped workload |
-| SHA-384 / SHA-512, HMAC over them | no | rust-reality uses them per session |
-| X25519, AES-GCM, ChaCha20-Poly1305, Ed25519, ML-KEM | benchmark harness only | — |
+| SHA-256 (portable + x86 SHA-NI) | yes | portable round function now **−187 cycles at 517 B** and **−149 at 1400 B** against RustCrypto `sha2`; +38 to +97 cycles at 0–32 B, which is ~0.03% of a session and is where this work stops |
+| HMAC-SHA256, HKDF-SHA256 | yes | not re-measured since the SHA-256 fix; the recorded HKDF deficit is stale rather than refuted |
+| SHA-384 / SHA-512, HMAC-SHA384/512, HKDF-SHA384 | yes | rust-reality performs all of them per session; SHA-NI does not accelerate this family |
+| X25519 (x86_64) | yes — s2n-bignum's assembly, imported | correctness complete against **two** oracles; `k` against `aws-lc-rs` is the open question |
+| AES-GCM, ChaCha20-Poly1305, Ed25519, ML-KEM | benchmark harness only | — |
 
 The recorded numbers under `benchmarks/results/` were taken in a **shared
 cloud container**, which is not a measurement host. They are directional only.
-Nothing here is currently an integration candidate.
+Nothing here is an integration candidate until its `k` is measured.
 
 ## Architecture, and what it is optimised for
 

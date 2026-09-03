@@ -1,6 +1,6 @@
 # Readiness matrix
 
-*Last updated 2026-09-03, against rust-reality `0a1dacb`.*
+*Last updated 2026-09-03, against rust-reality `0436370`.*
 
 This file is the per-primitive technical matrix. Research narrative, decisions
 and rejected hypotheses belong in this repository's GitHub issues, not here —
@@ -21,12 +21,13 @@ one authority per kind of state.
 | `DELEGATED` | rust-reality keeps a mature provider; researched and deliberately not replaced |
 | `REJECTED` | measured and refused, with the reason recorded |
 
-Nothing is `PRODUCTION_READY_FOR_RUST_REALITY`. Nothing is an
-`INTEGRATION_CANDIDATE`.
+Nothing is `PRODUCTION_READY_FOR_RUST_REALITY`, and nothing is an
+`INTEGRATION_CANDIDATE` yet: X25519 is the first primitive whose correctness
+case is complete, and it becomes a candidate only when `k` is measured.
 
 ## What rust-reality actually performs
 
-Audited from rust-reality source at `0a1dacb`. Frequencies are per public
+Audited from rust-reality source at `0436370`. Frequencies are per public
 REALITY session unless stated. This is the requirement list; anything not on it
 is out of scope.
 
@@ -72,62 +73,102 @@ Portable implementation plus an x86_64 SHA-NI backend selected at runtime.
 | side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` (SHA-256 has no secret-dependent control flow by construction, but no review has been recorded) |
 | performance | **not** `PERFORMANCE_CHARACTERIZED` — but the incumbent comparison **has** been run, and fastcrypto loses at every measured size (see below) |
 
-**Measured against the incumbent, SHA-NI on both sides** (AMD EPYC 9K65, shared
-container, so directional):
+**The portable round function was the problem, and it is fixed.** Measured on an
+i3-8100 — no SHA-NI, so both sides run their portable paths and this compares
+the round function itself. The deficit scaled with block count (~+1,150
+instructions per 64-byte block), because `portable_compress_blocks` was 411
+instructions executed 64 times against RustCrypto's 3,390-instruction
+straight-line body: the loop never unrolled. Restructuring it into eight groups
+of eight rounds with compile-time name rotation left:
 
-| input | fastcrypto | RustCrypto `sha2` | fastcrypto is |
-| ---: | ---: | ---: | --- |
-| 0 B | 97.5 ns | 58.6 ns | **+66%** |
-| 32 B | 104.4 ns | 57.2 ns | **+83%** |
-| 512 B | 378.8 ns | 326.1 ns | +16% |
-| 1400 B | 871.8 ns | 830.8 ns | +4.9% |
-| 64 KiB | 36,097 ns | 35,949 ns | +0.4% |
+| input | instructions vs RustCrypto | cycles vs RustCrypto |
+| ---: | ---: | ---: |
+| 0 B | +239 | +38 |
+| 32 B | +361 | +97 |
+| 517 B | +1,402 | **−187** |
+| 1400 B | +3,340 | **−149** |
 
-Parity arrives only at sizes rust-reality never hashes. **Its inputs are the
-small ones** — a 517 B ClientHello, a ~944 B transcript absorbed in six chunks
-of 6–517 B, and 32 B HMAC inputs — which is exactly where fastcrypto is 66–83%
-behind. The gap is fixed per-call overhead, not compression throughput.
+At handshake sizes the portable path is now slightly *faster in cycles* than
+RustCrypto. The residual +38 to +97 cycles at 0–32 B is genuine fixed per-call
+cost: backend dispatch through a function pointer, and a 128-byte zeroed
+scratch in `finalize_into`.
 
-**Blocker:** the deficit is at small inputs. Closing it is a specific,
-tractable problem (initialisation and finalisation cost, not the round
-function), but until it closes, SHA-256 is not an integration candidate. What
-has still never been measured is rust-reality's *shapes* — the incremental
-transcript with clone snapshots, and 16 Expand-Label calls from one PRK — on a
-dedicated host.
+**And that is where SHA-256 work stops.** rust-reality performs roughly ten
+finalisations per session, so the residual is about 0.03% of session CPU.
+Trading the audited zeroization high-water mark for something invisible is not
+an improvement. The digest family's remaining value is correctness, `no_std`,
+and suite-level dependency elimination — not cycles.
+
+**Still unmeasured:** rust-reality's *shapes* — the incremental transcript with
+clone snapshots, and 16 Expand-Label calls from one PRK — on a dedicated host,
+and anything on SHA-NI hardware, where both implementations use hardware
+compression and this change moves nothing.
 
 ### HMAC-SHA256 — `RESEARCH_ONLY`
 
-RFC 4231 vectors. Same gaps as SHA-256, plus: rust-reality performs HMAC 2× per
+RFC 4231 vectors. Same gaps as SHA-256: rust-reality performs HMAC twice per
 session at hash-length sizes, where per-call construction cost dominates, and
-`HMAC-SHA512` (which rust-reality also needs, once per session) does not exist
-here.
+that shape has not been measured on a dedicated host.
 
-### HKDF-SHA256 — `RESEARCH_ONLY`, currently losing
+### HKDF-SHA256 — `RESEARCH_ONLY`
 
 RFC 5869 vectors, plus a prepared-key expander that reuses HMAC key state
 across labels — the right idea for TLS, where one PRK feeds 16 Expand-Label
 calls per session.
 
-**This repository's own measurement puts it ~29% slower than RustCrypto `hkdf`
-on the TLS-shaped workload.** That is the incumbent. Until that inverts on a
-real measurement host, HKDF is not a candidate.
+A correctness defect was found and fixed here that no one-shot RFC vector could
+have caught: the expander produced **wrong material from the second expansion
+onwards**, because correctness depended on the caller resetting the HMAC state
+first. Reusable crypto state must be correct by construction, and the tests now
+cover repeated expansion, cloning, multiple TLS labels from one PRK, multi-block
+output and boundary lengths rather than one-shot vectors alone.
 
-### SHA-384 / SHA-512 — not implemented
+The recorded ~29% deficit against RustCrypto `hkdf` predates the SHA-256 round
+function fix that removed ~1,000 instructions per block, so it is stale rather
+than refuted; it has not been re-measured on a dedicated host.
 
-rust-reality needs SHA-384 (alternate suite transcript and key schedule) and
-HMAC-SHA512 (certificate binding, once per session). Neither exists here. Note
-that SHA-NI does **not** accelerate the SHA-512 family, so this is a different
-optimisation problem from SHA-256 and the SHA-NI backend does not help it.
+### SHA-384 / SHA-512, HMAC over them, HKDF-SHA384 — implemented
 
-### X25519 — `DELEGATED` (provisionally)
+rust-reality needs SHA-384 (alternate-suite transcript and key schedule),
+HMAC-SHA512 (certificate binding) and HKDF-SHA384. All now exist, verified
+against FIPS 180-4, RFC 4231 and RFC 5869 vectors.
 
-Not implemented; benchmark harness only. The bar is `aws-lc-rs`, which is worth
-a measured **−12.3% of server CPU per session** in production. A native
-implementation must beat s2n-bignum's assembly on Zen while remaining
-constant-time. That is a large, high-risk undertaking with a strong incumbent.
+HMAC-SHA384 is **not** truncated HMAC-SHA512: the outer hash absorbs the
+48-byte inner tag, not 64 bytes truncated afterwards. That distinction is the
+one a from-scratch implementation gets wrong, and it has its own test.
 
-Delegating X25519 through the unified API is the expected outcome unless
-evidence says otherwise.
+SHA-NI does not accelerate the SHA-512 family, so these are portable-only and
+will stay that way until measurement says otherwise.
+
+### X25519 — `CORRECTNESS_PROVEN`, `FUZZED`, x86_64 only
+
+**The earlier "delegate it" conclusion was wrong, and the reason is worth
+keeping.** It assumed the choice was *reimplement the arithmetic or keep
+`aws-lc-rs`*. It is not: `aws-lc-rs` computes X25519 with s2n-bignum's
+assembly, under a licence (`Apache-2.0 OR ISC OR MIT-0`) that permits taking
+those routines directly. The question was never "can we beat s2n-bignum" but
+"must we carry 2.6 MB of C libcrypto to run 164 KB of it".
+
+Imported: four routines, byte-for-byte, integrated with `global_asm!` — no
+build script, no C toolchain, no CMake, no bindgen. Provenance, the pinned
+revision, the exact transformation and the narrow verification claim are in
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md).
+
+| property | state |
+| --- | --- |
+| correctness | RFC 7748 §5.2 and §6.1 including the 1,000-iteration vector; differential against **both** `aws-lc-rs` and `x25519-dalek` over randomised secrets, randomised peer encodings, the ignored high bit and the canonical low-order points |
+| fuzzing | `FUZZED` — differential target against `x25519-dalek` |
+| `no_std`, allocation-free | yes; entropy is the caller's, so the primitive takes 32 bytes rather than an RNG |
+| zeroization | all three secret types zeroize on drop; no secret bytes in any `Debug` |
+| side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` — the arithmetic is upstream's and unmodified, but no timing experiment has been recorded here |
+| generated code | the machine code `global_asm!` emits is byte-identical to GNU `as` output for all four routines |
+| performance | **not yet** `PERFORMANCE_CHARACTERIZED`: the benchmark arms exist, the measurement against `aws-lc-rs` on a quiet P-core has not been run |
+| portability | x86_64 only. AArch64 is the next port; s2n-bignum ships the ARM routines under the same licence |
+
+**Blocker:** `k` — our time divided by `aws-lc-rs`'s, at the exact production
+shapes — is unmeasured. The gate is `k ≤ 1.05` to continue, `k ≤ 1.03` to be a
+consolidation candidate. Since both sides run the same arithmetic, anything
+worse than that is wrapper overhead and has a findable mechanism.
 
 ### AEAD (AES-GCM, ChaCha20-Poly1305) — `DELEGATED` (provisionally)
 
@@ -153,12 +194,12 @@ High implementation risk, no measured headroom. Mature implementation stays.
 
 | gap | consequence |
 | --- | --- |
-| no measurement on a dedicated host | every recorded number is directional only |
-| never measured at rust-reality's *shapes* | the incremental transcript (6 updates, 4 clone snapshots) and the 16-labels-from-one-PRK schedule are the operations that decide integration |
-| small-input deficit unclosed | rust-reality's inputs are 32–1400 B, where fastcrypto trails the incumbent by 5–83% |
+| X25519 `k` unmeasured | the one number that decides the highest-value migration |
+| X25519 is x86_64 only | `aws-lc-rs` cannot be removed from rust-reality until AArch64 is ported, because that would silently regress an ARM release |
+| never measured at rust-reality's *shapes* | the incremental transcript (6 updates, 4 clone snapshots) and the 16-labels-from-one-PRK schedule are the operations that decide digest integration |
 | no whole-product A/B | no primitive can be accepted without one |
-| no side-channel review recorded | required before anything ships |
-| SHA-384/512 absent | rust-reality needs both per session |
+| no side-channel review recorded | required before anything ships; for X25519 the arithmetic is upstream's and unmodified, which is an argument, not evidence |
+| shared-container measurements | the numbers under `benchmarks/results/` are directional only |
 
 ## Quality gates
 

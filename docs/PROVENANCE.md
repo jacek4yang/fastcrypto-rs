@@ -86,11 +86,12 @@ reachable only through an archived staging repository.
 
 ## Register
 
-*No adapted implementation code has been imported yet.* Everything currently in
-`crates/` was written against FIPS 180-4, RFC 2104 and RFC 5869 with published
-test vectors, and against `core::arch` intrinsics documented by Intel.
+The SHA, HMAC and HKDF implementations in `crates/fastcrypto-core/` are not
+adapted from anything: they were written against FIPS 180-4, RFC 2104, RFC 5869
+and RFC 8446 with published test vectors, and against `core::arch` intrinsics
+documented by Intel. They have no entry here because they need none.
 
-The table below is the shape every future entry takes.
+Every entry below takes this shape:
 
 | field | content |
 | --- | --- |
@@ -107,6 +108,104 @@ The table below is the shape every future entry takes.
 | verification status | whether any upstream proof or audit still applies, and why |
 
 <!-- Add entries below. Keep them in the order the code was imported. -->
+
+### 1. X25519 scalar multiplication, x86_64
+
+| field | content |
+| --- | --- |
+| primitive | X25519 variable-base and fixed-base scalar multiplication, x86_64 only |
+| upstream project | s2n-bignum |
+| upstream URL | <https://github.com/awslabs/s2n-bignum> |
+| commit / tag | `7948ca132c8cdd22fbd7372bd14a4f4ae0a2da7c` (2026-09-03; no release tags exist) |
+| source paths | `x86_att/curve25519/curve25519_x25519{,_alt,base,base_alt}.S`, `include/_internal_s2n_bignum_x86_att.h`, `LICENSE` |
+| license | `Apache-2.0 OR ISC OR MIT-0` — declared in the `LICENSE` file and repeated as an SPDX header in every imported `.S` |
+| notices | `Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.` retained verbatim at the head of each vendored file; the full upstream `LICENSE` is vendored beside them at `crates/fastcrypto-x86/src/x25519/upstream/LICENSE` |
+| copied | all four routines, byte-for-byte, as `crates/fastcrypto-x86/src/x25519/upstream/*.S` |
+| rewritten | nothing — no arithmetic, scheduling, register allocation or memory layout was touched |
+| structural changes | the committed `.s` files are the C-preprocessor expansion of those `.S` files with exported symbols namespaced (below); a Rust wrapper adds dispatch and the RFC 7748 §6.1 zero check that upstream deliberately omits |
+| verification status | **the upstream HOL Light proofs do not travel with this import.** See below. |
+
+**Why this import exists.** rust-reality already runs this exact upstream
+project's X25519, reached through `aws-lc-rs` → `aws-lc-sys` → a vendored
+~2.6 MB C libcrypto with a CMake/C build. Importing the four routines directly
+keeps the arithmetic and drops the build system: `global_asm!`, no build script,
+no C toolchain, and about 164 KB of `.text` plus `.rodata` instead of 2.6 MB.
+
+**Exact transformation.** For each of the four units:
+
+```sh
+cpp -P -I upstream -DS2N_BN_HIDE_SYMBOLS upstream/<unit>.S \
+  | sed -E 's/\bcurve25519_/fastcrypto_curve25519_/g' > <unit>.s
+```
+
+That is macro expansion plus a symbol prefix, and nothing else. The prefix is
+applied at word boundaries so upstream's local labels keep their names and stay
+recognisable in a profile; it exists because a binary may legitimately contain
+both this import and AWS-LC's copy during A/B measurement, and two definitions
+of `curve25519_x25519` would collide at link time.
+`fastcrypto_x86::x25519::tests::regenerating_the_assembly_reproduces_it`
+re-runs that pipeline and compares, so the claim is checked rather than
+asserted, and
+`fastcrypto_x86::x25519::tests::vendored_upstream_matches_the_recorded_digests`
+pins the vendored inputs by SHA-256.
+
+**Relationship to what AWS-LC ships.** `aws-lc-sys` 0.45.0 vendors an *older*
+import of the same files. They differ in three upstream commits, none of which
+touches the arithmetic: `#428` (loop alignment for the Skylake JCC erratum),
+`#242` and `#446` (moving the 48,576-byte precomputed table into `.rodata` and
+fixing its Mach-O references). This import is therefore the same routines at a
+newer revision, not a copy of AWS-LC's artefact, and the difference is recorded
+here rather than glossed as "identical".
+
+**Required CPU features and dispatch.** `curve25519_x25519` and
+`curve25519_x25519base` use BMI2 and ADX. The `_alt` routines are baseline
+x86_64. Both are compiled in and selected by a cached CPUID probe, mirroring
+AWS-LC's own `use_s2n_bignum_alt()`, so a generic release binary cannot execute
+an instruction the CPU lacks.
+
+**ABI.** System V AMD64: `RDI` = result, `RSI` = scalar, `RDX` = point; no
+return value; the routines preserve `RBX`, `RBP` and `R12`–`R15` themselves,
+allocate their own frame (about 416 bytes for the variable-base routine), do not
+use the red zone, and require that the result not alias either input. Inputs
+and outputs are little-endian 32-byte encodings. Both routines clamp the scalar
+internally per RFC 7748; neither performs the §6.1 zero check.
+
+**Verification status, stated narrowly.** s2n-bignum's routines are accompanied
+by machine-checked HOL Light proofs in the upstream repository. Those proofs
+cover upstream's source; this repository has neither reproduced them nor
+extended them to its own build, and **must not claim otherwise**. Nothing in
+the arithmetic was modified, but "unmodified" is not the same as "proved", and
+the assembler, linker and build configuration here are not upstream's.
+
+What this repository has actually demonstrated, and will say instead:
+
+- the machine code Rust's `global_asm!` emits is **byte-identical** to what GNU
+  `as` produces from the same input, for all four routines' `.text` and both
+  `.rodata` tables — so the integration introduces no codegen divergence. To
+  reproduce, for each unit:
+
+  ```sh
+  as --64 -o gnu.o crates/fastcrypto-x86/src/x25519/<unit>.s
+  printf '#![no_std]\ncore::arch::global_asm!(include_str!("%s"), options(att_syntax));\n' \
+    "$PWD/crates/fastcrypto-x86/src/x25519/<unit>.s" > /tmp/unit.rs
+  rustc --edition 2021 --crate-type lib --emit=obj -O -o llvm.o /tmp/unit.rs
+  for section in .text .rodata; do
+      objcopy -O binary --only-section=$section gnu.o a.bin
+      objcopy -O binary --only-section=$section llvm.o b.bin
+      cmp a.bin b.bin
+  done
+  ```
+
+- RFC 7748 §5.2 and §6.1 vectors pass, including the 1,000-iteration one;
+- results match **two independent implementations**, `aws-lc-rs` and
+  `x25519-dalek`, over randomised secrets, randomised peer encodings, the
+  ignored high bit, and the canonical low-order points;
+- a differential fuzz target against `x25519-dalek` exists.
+
+Constant-time behaviour is inherited from upstream's design, not measured here.
+Until a timing experiment is recorded, the honest phrasing is "no
+secret-dependent control flow was found by source review", not "constant-time
+verified".
 
 ## Candidate upstreams and their licenses
 

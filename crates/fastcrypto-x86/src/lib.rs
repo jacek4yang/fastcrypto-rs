@@ -3,16 +3,16 @@
 //!
 //! # Scope
 //!
-//! This crate currently provides the *dispatch foundation* only: a cached,
-//! allocation-free, branch-light CPU feature probe. The first primitive that
-//! will use it is SHA-256 with Intel SHA Extensions (SHA-NI), which is
-//! deliberately deferred until the portable baseline has been profiled
-//! (see ``PROJECT_STATUS.md``).
+//! * [`detect`] — a cached, allocation-free, branch-light CPU feature probe,
+//!   the dispatch foundation everything else here selects on.
+//! * [`sha256`] — SHA-256 using Intel SHA Extensions (SHA-NI).
+//! * [`x25519`] — X25519, from s2n-bignum's assembly, integrated with
+//!   `global_asm!` so that it needs no build script and no C toolchain.
 //!
 //! # Safety policy
 //!
-//! Every future unsafe block in this crate must carry a SAFETY comment stating
-//! the invariant that makes it sound, and must be gated behind the matching
+//! Every unsafe block in this crate must carry a SAFETY comment stating the
+//! invariant that makes it sound, and must be gated behind the matching
 //! runtime feature check exported here.
 
 #![no_std]
@@ -28,6 +28,8 @@ extern crate std;
 pub mod detect;
 #[cfg(target_arch = "x86_64")]
 pub mod sha256;
+#[cfg(target_arch = "x86_64")]
+pub mod x25519;
 
 #[cfg(not(target_arch = "x86_64"))]
 pub mod detect {
@@ -92,6 +94,18 @@ pub mod detect {
         /// Always false.
         #[must_use]
         pub const fn avx512f(&self) -> bool {
+            false
+        }
+
+        /// Always false.
+        #[must_use]
+        pub const fn bmi2(&self) -> bool {
+            false
+        }
+
+        /// Always false.
+        #[must_use]
+        pub const fn adx(&self) -> bool {
             false
         }
     }

@@ -49,6 +49,8 @@ extern crate alloc;
 
 pub mod backend;
 pub mod dispatch;
+#[cfg(target_arch = "x86_64")]
+pub mod x25519;
 
 pub use dispatch::{
     HkdfExpander, HkdfSha256, HmacSha256, Sha256, hkdf_sha256, hmac_sha256, hmac_sha256_verify,
