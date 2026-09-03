@@ -6,7 +6,7 @@ written in Rust.
 > **Status: experimental research code.**
 > Not audited. Not constant-time verified. Our SHA-256 now measures within
 > about 1% of ring and aws-lc-rs at 1 KiB and above, and HKDF-SHA256 is
-> within about 30% on the TLS-shaped workload, but none of that is a claim of
+> within about 29% on the TLS-shaped workload, but none of that is a claim of
 > being faster: those are single-run numbers from a shared container, and
 > this project requires a dedicated machine and a measurement recorded
 > under `benchmarks/results/` before any performance claim.
@@ -54,12 +54,12 @@ for measurements.
 
 | benchmark | first portable baseline | today | best competitor in the same run |
 |---|---|---|---|
-| SHA-256, 0 B | 282.4 ns | 70.5 ns | aws-lc-rs 61.6 ns |
-| SHA-256, 64 KiB | 225.9 us | 35.9 us | aws-lc-rs 35.9 us |
-| HKDF extract + expand to 88 B | 4346 ns | 922.9 ns | RustCrypto hkdf 657.8 ns |
-| HKDF, four labels from one PRK | 1375 ns (per-label API) | 640.2 ns | RustCrypto hkdf 482.8 ns |
+| SHA-256, 0 B | 282.4 ns | 67.4 ns | aws-lc-rs 61.6 ns |
+| SHA-256, 64 KiB | 225.9 us | 36.0 us | aws-lc-rs 35.9 us |
+| HKDF extract + expand to 88 B | 4346 ns | 880.5 ns | RustCrypto hkdf 656.8 ns |
+| HKDF, four labels from one PRK | 1375 ns (per-label API) | 627.3 ns | RustCrypto hkdf 486.5 ns |
 
-Four optimization steps got there, all recorded with their measurements -
+Five optimization steps got there, all recorded with their measurements -
 including two rejected variants - in `benchmarks/results/`.
 
 ## Repository layout
