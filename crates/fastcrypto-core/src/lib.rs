@@ -40,6 +40,7 @@ extern crate alloc;
 
 pub mod error;
 pub mod hkdf;
+pub mod hkdf384;
 pub mod hmac;
 pub mod hmac512;
 pub mod sha256;
@@ -48,6 +49,7 @@ mod util;
 
 pub use error::Error;
 pub use hkdf::{HkdfExpander, HkdfSha256, extract, extract_with, hkdf_sha256, hkdf_sha256_with};
+pub use hkdf384::{HkdfExpander384, HkdfSha384, hkdf_sha384};
 pub use hmac::{HmacSha256, hmac_sha256, hmac_sha256_verify};
 pub use hmac512::{HmacSha384, HmacSha512, hmac_sha384, hmac_sha512};
 pub use sha256::{Sha256, sha256};
