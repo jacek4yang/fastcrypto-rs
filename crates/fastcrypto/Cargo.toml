@@ -1,0 +1,28 @@
+[package]
+name = "fastcrypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Experimental high-performance cryptography for HTTPS/TLS workloads"
+
+[dependencies]
+fastcrypto-core = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+fastcrypto-x86 = { workspace = true }
+
+# Optional because it is only meaningful on aarch64; the `std` feature
+# turns on the platform feature probe there.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+fastcrypto-aarch64 = { workspace = true, optional = true }
+
+[features]
+default = ["std"]
+std = ["fastcrypto-core/std", "fastcrypto-aarch64", "fastcrypto-aarch64?/std"]
+
+[lints]
+workspace = true
+
