@@ -1,0 +1,8 @@
+# cargo-fuzz artefacts are not committed: they are crash inputs, and a crash
+# should first become a regression test in
+# crates/fastcrypto-bench/tests/differential.rs.
+artifacts/
+corpus/*
+!corpus/.gitkeep
+target/
+
