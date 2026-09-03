@@ -32,9 +32,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rust-src
-          targets: aarch64-unknown-linux-gnu
+      # rust-toolchain.toml pins the compiler, so the target has to be added to
+      # *that* toolchain: a target installed into `stable` by the action above
+      # is invisible to the pinned one, and the build fails with
+      # "can't find crate for `core`".
+      - run: rustup target add aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
       # The portable core must stay no_std and allocation-free: rust-reality's
       # protocol core is no_std-enforced, and a std-only primitive cannot be
@@ -56,6 +58,11 @@ jobs:
       # produce a number this project would accept.
       - run: cargo check -p fastcrypto-bench --benches
       - name: fuzz targets
+        # cargo-fuzz needs nightly `-Z` flags, but rust-toolchain.toml pins a
+        # stable channel and wins over whatever the action installed.
+        # RUSTUP_TOOLCHAIN overrides the pin for this step only.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: |
           cargo install cargo-fuzz --locked
           cargo fuzz check --fuzz-dir fuzz
