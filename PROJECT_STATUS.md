@@ -1,201 +1,154 @@
-# Project status
+# Readiness matrix
 
-*Last updated: 2026-09-03. Repository state: Milestones 0 and 1 complete,
-Milestone 2 in progress (portable schedule done, SHA-NI backend done), all
-quality gates green.*
+*Last updated 2026-09-03, against rust-reality `0a1dacb`.*
 
-## What this is
+This file is the per-primitive technical matrix. Research narrative, decisions
+and rejected hypotheses belong in this repository's GitHub issues, not here —
+one authority per kind of state.
 
-An independent, benchmark-driven Rust cryptography project aimed at HTTPS/TLS
-workloads. It implements standardised primitives itself, measures them against
-ring / aws-lc-rs / RustCrypto, and only then optimizes. It is experimental,
-unaudited, and currently **slower** than everything it is benchmarked against.
+## Status vocabulary
 
-Read this file together with:
-
-* ``docs/ARCHITECTURE.md`` - layering, dispatch, unsafe policy
-* ``docs/BENCHMARKING.md`` - how to reproduce the numbers
-* ``docs/SECURITY_MODEL.md`` - threat model and what is not verified
-* ``docs/ROADMAP.md`` - milestone order
-* ``benchmarks/results/`2026-09-03-amd-epyc-9k65-shared-cloud.md` - the numbers
-
-## State of the repository
-
-| Component | State |
+| status | meaning |
 | --- | --- |
-| Workspace, pinned toolchain, lint gates | done |
-| `fastcrypto-core` (portable, no_std, no unsafe) | SHA-256, HMAC-SHA256, HKDF-SHA256, prepared-key expander |
-| `fastcrypto-x86` | CPUID feature detection, cached, cross-checked against std |
-| `fastcrypto-aarch64` | feature probe (std-gated), cross-compiles |
-| `fastcrypto` (public API) | safe re-exports + `backend` reporting |
-| `fastcrypto-bench` | Criterion + iai-callgrind harness, differential and backend-equivalence tests |
-| `fuzz/` | two cargo-fuzz targets, both run clean |
-| SIMD / instruction backends | x86_64 SHA-NI SHA-256: done and selected at runtime |
+| `RESEARCH_ONLY` | exists, not a candidate for anything |
+| `API_STABLE_FOR_INTEGRATION` | the shape it would have inside rust-reality is settled |
+| `CORRECTNESS_PROVEN` | published KATs **and** differential against an independent implementation |
+| `FUZZED` | a cargo-fuzz target exists and has run clean |
+| `SIDE_CHANNEL_REVIEW_REQUIRED` | no secret-dependent-control-flow review has been done |
+| `PERFORMANCE_CHARACTERIZED` | measured at rust-reality's shapes, on a real measurement host, against the incumbent |
+| `INTEGRATION_CANDIDATE` | beats or materially simplifies the incumbent with no regression |
+| `PRODUCTION_READY_FOR_RUST_REALITY` | integrated, gated, and accepted by whole-product A/B |
+| `DELEGATED` | rust-reality keeps a mature provider; researched and deliberately not replaced |
+| `REJECTED` | measured and refused, with the reason recorded |
 
-Quality gates (all passing):
+Nothing is `PRODUCTION_READY_FOR_RUST_REALITY`. Nothing is an
+`INTEGRATION_CANDIDATE`.
+
+## What rust-reality actually performs
+
+Audited from rust-reality source at `0a1dacb`. Frequencies are per public
+REALITY session unless stated. This is the requirement list; anything not on it
+is out of scope.
+
+| operation | site | per session | shape |
+| --- | --- | ---: | --- |
+| X25519 variable-base — REALITY auth | `protocol/reality/auth.rs` | 1 | configured static key, imported once per config generation |
+| X25519 basepoint + variable-base — TLS ECDHE | `tls13/handshake.rs` | 1 + 1 | ephemeral, consumed once |
+| Ed25519 sign — CertificateVerify | `tls13/messages.rs` | 1 | 130 B (SHA-256 suite) / 146 B; key held for process lifetime |
+| HMAC-SHA512 — Xray certificate binding | `tls13/messages.rs` | 1 | 32 B key, 32 B message |
+| AES-256-GCM open — REALITY session id | `protocol/reality/auth.rs` | 1 | 32 B ciphertext, fixed nonce |
+| HKDF-SHA256 — REALITY auth key | `protocol/reality/auth.rs` | 1 | 20 B salt, 32 B IKM, `"REALITY"` info, 32 B out |
+| SHA-256/384 transcript | `tls13/keys.rs`, `handshake.rs` | 1 | **6 updates + 4 clone snapshots**, ~944 B (X25519) or ~3.2 KiB (hybrid) |
+| HKDF-Extract | `tls13/keys.rs` | **3** | hash-length salt and IKM |
+| HKDF-Expand-Label | `tls13/keys.rs` | **16** | hash-length PRK, RFC 8446 label, hash-length output |
+| HMAC — TLS Finished | `tls13/keys.rs` | **2** | hash-length key and input |
+| AES-128-GCM seal/open | `tls13/record.rs` | per record | TLS record sizes |
+| ML-KEM-768 encapsulation | `tls13/handshake.rs` | 1 (hybrid group only) | — |
+| Ed25519 keygen, X25519 keygen/probe/handoff | various | not per session | cannot move the primary metric |
+
+Two constraints that decide more than performance does:
+
+- `tls13/{keys,record,messages}.rs` and `reality/client_hello.rs` are inside
+  rust-reality's **enforced `no_std + alloc` protocol core**
+  (ADR 0016, `tests/protocol_core_boundary.rs`). A `std`-only crate cannot go
+  there without an explicit architecture decision — this is why `aws-lc-rs`
+  holds X25519 but not Ed25519.
+- The deployment envelope is **1–2 vCPU virtualized Linux on AMD Zen with
+  SHA-NI, AES-NI, retpolines and no PTI**. A mechanism that only pays on a
+  many-core Intel laptop is characterization, not a candidate.
+
+## Per-primitive status
+
+### SHA-256 — `RESEARCH_ONLY`
+
+Portable implementation plus an x86_64 SHA-NI backend selected at runtime.
+
+| property | state |
+| --- | --- |
+| correctness | FIPS 180-4 KATs + differential vs RustCrypto / ring / aws-lc-rs |
+| fuzzing | `FUZZED` — differential target, runs clean |
+| `no_std`, allocation-free | yes |
+| zeroization | finalize zeroizes only what it wrote; buffer high-water mark tracked |
+| side channel | `SIDE_CHANNEL_REVIEW_REQUIRED` (SHA-256 has no secret-dependent control flow by construction, but no review has been recorded) |
+| performance | **not** `PERFORMANCE_CHARACTERIZED`. Existing numbers are from a shared cloud container and compare against ring/aws-lc-rs, **not** against RustCrypto `sha2` — which is rust-reality's incumbent and which wins on SHA-NI hardware |
+
+**Blocker:** the comparison that matters has not been run. rust-reality
+`benches/crypto_providers.rs` already measures the exact shapes; the missing
+work is running fastcrypto against it on a real host.
+
+### HMAC-SHA256 — `RESEARCH_ONLY`
+
+RFC 4231 vectors. Same gaps as SHA-256, plus: rust-reality performs HMAC 2× per
+session at hash-length sizes, where per-call construction cost dominates, and
+`HMAC-SHA512` (which rust-reality also needs, once per session) does not exist
+here.
+
+### HKDF-SHA256 — `RESEARCH_ONLY`, currently losing
+
+RFC 5869 vectors, plus a prepared-key expander that reuses HMAC key state
+across labels — the right idea for TLS, where one PRK feeds 16 Expand-Label
+calls per session.
+
+**This repository's own measurement puts it ~29% slower than RustCrypto `hkdf`
+on the TLS-shaped workload.** That is the incumbent. Until that inverts on a
+real measurement host, HKDF is not a candidate.
+
+### SHA-384 / SHA-512 — not implemented
+
+rust-reality needs SHA-384 (alternate suite transcript and key schedule) and
+HMAC-SHA512 (certificate binding, once per session). Neither exists here. Note
+that SHA-NI does **not** accelerate the SHA-512 family, so this is a different
+optimisation problem from SHA-256 and the SHA-NI backend does not help it.
+
+### X25519 — `DELEGATED` (provisionally)
+
+Not implemented; benchmark harness only. The bar is `aws-lc-rs`, which is worth
+a measured **−12.3% of server CPU per session** in production. A native
+implementation must beat s2n-bignum's assembly on Zen while remaining
+constant-time. That is a large, high-risk undertaking with a strong incumbent.
+
+Delegating X25519 through the unified API is the expected outcome unless
+evidence says otherwise.
+
+### AEAD (AES-GCM, ChaCha20-Poly1305) — `DELEGATED` (provisionally)
+
+Not implemented; benchmark harness only. `ring` beat `aws-lc-rs` at every
+measured production record size and is `no_std`-clean, so it sits inside the
+protocol core legitimately. Vision Direct also keeps steady-state payload off
+the record path, which caps what AEAD work can be worth end to end.
+
+### Ed25519 — `DELEGATED`
+
+Not implemented. rust-reality measured `aws-lc-rs` at ~1.9–2.0x over
+`ed25519-dalek` and **still rejected it**: the whole-session ceiling is ~2.0%
+and the faster provider is `std`-only, so it cannot enter the enforced protocol
+core. `ring` — the only `no_std`-clean alternative — is 23–40% *slower* than
+dalek. A native implementation would have to beat dalek while being
+`no_std`-clean and constant-time, for a ceiling of ~2%.
+
+### ML-KEM / PQ — `DELEGATED`, out of scope
+
+High implementation risk, no measured headroom. Mature implementation stays.
+
+## Cross-cutting gaps
+
+| gap | consequence |
+| --- | --- |
+| no measurement on a dedicated host | every recorded number is directional only |
+| never compared against RustCrypto for SHA/HMAC/HKDF | the comparison that decides integration has not happened |
+| no AMD evidence | the deployment target is Zen 1 and Zen 3 |
+| no whole-product A/B | no primitive can be accepted without one |
+| no side-channel review recorded | required before anything ships |
+| SHA-384/512 absent | rust-reality needs both per session |
+
+## Quality gates
 
 ```sh
-./scripts/check.sh
-# cargo fmt --all -- --check
-# cargo check --workspace --all-targets
-# cargo clippy --workspace --all-targets -- -D warnings
-# cargo test --workspace --all-features
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-features
 ```
 
-Also verified: `cargo check --target aarch64-unknown-linux-gnu` for
-`fastcrypto-aarch64` and `fastcrypto`.
-
-## First primitive: SHA-256
-
-Chosen over ChaCha20 for five reasons, in order of weight:
-
-1. **TLS relevance.** TLS 1.3 uses HKDF-SHA256 for the entire key schedule and
-   SHA-256 for the transcript hash; every handshake touches it several times,
-   and small inputs (labels, 32-byte secrets) dominate, which is exactly the
-   regime where implementation quality shows up as fixed per-call cost.
-2. **Scope.** SHA-256 is one compression function with a published constant
-   set. Getting it bit-exact is achievable and testable today.
-3. **Benchmarkability.** Competitors already in the lab (ring, aws-lc-rs,
-   RustCrypto) all expose it, so there is a fair, dense comparison surface.
-4. **Optimization headroom with a clear path.** The CPU in this environment has
-   Intel SHA Extensions (verified by our own CPUID probe), and the portable
-   path itself has measurable headroom (see bottlenecks). Both directions are
-   available without changing the public API.
-5. **Verifiability.** FIPS 180-4 KAT vectors exist for the primitive, and
-   HMAC-SHA256 / HKDF-SHA256 (RFC 4231, RFC 5869) sit directly on top of it, so
-   one primitive validates three.
-
-HMAC-SHA256 and HKDF-SHA256 were implemented alongside it because they are
-small, they are what TLS actually calls, and they give the lab real baselines
-for the HKDF-SHA256 group.
-
-## Correctness status
-
-| Check | Result |
-| --- | --- |
-| FIPS 180-4 SHA-256 vectors (empty, "abc", 448-bit, streaming) | pass |
-| SHA-256 differential vs RustCrypto `sha2`, ring, aws-lc-rs | pass for every length in 0..300 plus 512 B - 64 KiB |
-| Chunking independence (1..1000-byte updates) | pass |
-| RFC 4231 HMAC-SHA256 cases 1-6 (incl. truncated case 5, long-key case 6) | pass |
-| HMAC differential vs RustCrypto `hmac`, ring, aws-lc-rs | pass over key lengths 0, 1, 20, 31, 32, 63, 64, 65, 100, 200 |
-| RFC 5869 HKDF-SHA256 cases 1 and 3 | pass |
-| HKDF differential vs RustCrypto `hkdf`, ring, aws-lc-rs | pass across salt/IKM/info lengths and output lengths up to 255 blocks |
-| Oversized HKDF output rejected consistently | pass |
-| Cross-reference agreement (references must agree with each other) | pass |
-| cargo-fuzz: `sha256` (200k runs), `hkdf_sha256` (300k runs) | no crashes |
-
-One vector was wrong during development (RFC 4231 case 6 input string) and was
-caught by the differential comparison with three independent libraries; the
-value from the RFC text was then used verbatim. That is the intended workflow.
-
-## Benchmark summary (2026-09-03, shared cloud container, AMD EPYC 9K65)
-
-Full tables in `benchmarks/results/`. Headline numbers:
-
-* SHA-256 one-shot at 64 KiB: **36.0 us** for us, ring **35.9 us**, aws-lc-rs
-  **35.9 us** - indistinguishable in this run. At 0 B: **67.4 ns** for us,
-  ring 79.2 ns, aws-lc-rs 61.6 ns, so the fixed-cost gap at small sizes
-  narrowed from about 58% behind the best competitor to about 9%.
-* SHA-256 improvement today: about **-70%** at small sizes and **-82%** at
-  64 KiB versus the first portable baseline, in three measured steps
-  (message schedule, SHA-NI, zeroization scope).
-* Streaming 64 KiB in 1 KiB updates: 36.3 us vs ring 36.1 us.
-* HKDF-SHA256 extract + expand to 88 bytes: **880.5 ns** vs RustCrypto hkdf
-  656.8 ns, ring 788.4 ns, aws-lc-rs 801.2 ns. On the TLS-shaped workload
-  (four labels from one PRK, using the prepared-key expander): **627.3 ns**
-  vs RustCrypto hkdf 486.5 ns, down from 1172.6 ns with the per-label API.
-  It was 4346 ns at the start of the day.
-* AEAD and X25519 groups are still reference numbers only; those primitives are
-  not implemented yet.
-
-Competitiveness, stated precisely: at 1 KiB and above our SHA-256 is
-indistinguishable from ring and aws-lc-rs in these runs (within 1%). At
-small sizes we are within about 14% of the best competitor at 0 B and
-still behind aws-lc-rs. HKDF-SHA256 is about 1.8x slower than RustCrypto
-hkdf. Every one of those statements is a single-run measurement on a
-shared container, so none of them is a claim of being faster: they are
-the numbers a dedicated machine has to confirm or refute.
-
-## Current bottlenecks, in priority order
-
-1. **HKDF-SHA256 fixed costs (~1.34x against RustCrypto hkdf for a single
-   expand chain rebuilds its ipad/opad key states (two extra compressions each)
-   and every finalize zeroizes a 128-byte padding scratch with volatile writes.
-   A TLS key schedule expands several labels from one PRK, so preparing the HMAC
-   key once and reusing it is the fix. Measured at 1369 ns vs 648 ns for a full
-   extract + expand to 88 bytes (1205.7 ns vs 656.6 ns).
-2. **Construction cost: 26.5 ns vs 2.3 ns for RustCrypto.** Hasher
-   construction is 26.3 ns against 2.4 ns for RustCrypto: zeroization on drop
-   (9 words plus a 64-byte block of volatile writes). Deliberate trade-off, but
-   it now dominates below 256 bytes, which is the range TLS handshake hashing
-   lives in.
-3. **Remaining portable headroom (~1.27x against RustCrypto soft).** Only worth
-   another pass after the two items above.
-4. **No AArch64 SHA-2 backend yet.** The probe exists; the compression does not.
-
-## Optimization log
-
-Every optimization attempt is recorded with its measurement, including the ones
-that were reverted:
-
-* `benchmarks/results/2026-09-03-finalize-zeroization.md` - zeroize
-  only the message tail, the 0x80 delimiter and the length bytes in
-  finalize: -4.4% at 0 B, -4.6% on HKDF extract + expand.
-* `benchmarks/results/2026-09-03-hkdf-key-reuse.md` - reuse the HMAC
-  key state across the HKDF expand chain and add HkdfExpander for the
-  TLS-shaped multi-label case: -29% on expand, -47% on four labels.
-* `benchmarks/results/2026-09-03-zeroization-scope.md` - narrow the
-  zeroization in finalize to the bytes actually written: -27.7% at 0 B,
-  -12% to -16% on HKDF, no change to the security property.
-* `benchmarks/results/2026-09-03-sha256-sha-ni.md` - x86_64 SHA-NI backend:
-  -62% to -81% per size, plus the safe dispatch seam (Compressor) that let
-  the public API stay forbid(unsafe_code).
-* `benchmarks/results/2026-09-03-sha256-message-schedule.md` - portable
-  schedule rework: five variants, two rejected (one of them faster on 64 KiB
-  but slower on a single block), net -6.2% to -21.6% per size.
-
-## Next concrete optimization task
-
-**Decide the construction-time zeroization question with numbers.** It is 26.5 ns
-per hasher against 2.3 ns for RustCrypto, and it is now the largest fixed cost in
-the library: it dominates a 0-byte digest and appears once per HMAC in every
-HKDF call. Options to measure, not to guess between:
-
-1. Keep zeroization on drop, and add an explicit non-zeroizing path for callers
-   that hash public data (handshake transcripts, certificates), so the cost is
-   paid only where it buys something.
-2. Narrow it: zeroize the chaining state always, and the block buffer only up to
-   a high-water mark, tracking how much of the buffer was ever written.
-3. Keep it as is and document it as the price of the property.
-
-After that: the AArch64 ARMv8 SHA-2 backend, then AEAD (ChaCha20-Poly1305).
-
-## Reproducing everything here
-
-```sh
-./scripts/check.sh                       # quality gates
-cargo run --release --bin bench-env      # environment report
-cargo bench -p fastcrypto-bench          # all groups (~11 min)
-cargo bench -p fastcrypto-bench --bench micro   # instruction counts
-  # (add IAI_CALLGRIND_ALLOW_ASLR=true in containers that block setarch)
-
-# portable-vs-portable SHA-256 (forces RustCrypto onto its soft backend)
-RUSTFLAGS='--cfg sha2_backend="soft"' cargo bench -p fastcrypto-bench --bench sha256
-
-cd fuzz && cargo +nightly fuzz run sha256 -- -runs=200000 -max_len=2048
-```
-
-## Handover notes for the next engineer
-
-* Do not add a dependency to the library crates without a recorded reason;
-  competitor libraries belong in `fastcrypto-bench` only.
-* Every `unsafe` block needs a SAFETY comment and a feature gate.
-  `fastcrypto-core` forbids `unsafe` outright - keep it that way.
-* Benchmark numbers from this container are iteration-only. Before quoting any
-  absolute figure, re-run on a dedicated machine with a fixed clock and attach
-  `bench-env` output.
-* The iai-callgrind group exists for exactly the situation above: when a change
-  is too small for wall-clock timing on a noisy machine, count instructions.
-* The HKDF group is the one to watch after any SHA-256 change: it is the
-  end-to-end shape TLS actually uses.
-
+Also verified: `cargo check --target aarch64-unknown-linux-gnu`, and
+`fastcrypto-core` builds `no_std`.

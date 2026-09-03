@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  gates:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # rust-toolchain.toml pins the compiler; the action honours it.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, rust-src
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features
+
+  no_std:
+    name: no_std core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml pins the compiler, so the target has to be added to
+      # *that* toolchain: a target installed into `stable` by the action above
+      # is invisible to the pinned one, and the build fails with
+      # "can't find crate for `core`".
+      - run: rustup target add aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      # The portable core must stay no_std and allocation-free: rust-reality's
+      # protocol core is no_std-enforced, and a std-only primitive cannot be
+      # integrated there.
+      - run: cargo check -p fastcrypto-core --no-default-features
+      - run: cargo check -p fastcrypto --no-default-features
+      # Cross-architecture build, not a test run: proves the AArch64 backend
+      # and its feature probe still compile.
+      - run: cargo check -p fastcrypto-aarch64 --target aarch64-unknown-linux-gnu
+
+  benches_and_fuzz:
+    name: benchmark and fuzz targets compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      # Compile only. Benchmarks are never timed in CI: a shared runner cannot
+      # produce a number this project would accept.
+      - run: cargo check -p fastcrypto-bench --benches
+      - name: fuzz targets
+        # cargo-fuzz needs nightly `-Z` flags, but rust-toolchain.toml pins a
+        # stable channel and wins over whatever the action installed.
+        # RUSTUP_TOOLCHAIN overrides the pin for this step only.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: |
+          cargo install cargo-fuzz --locked
+          cargo fuzz check --fuzz-dir fuzz

@@ -1,154 +1,147 @@
 # fastcrypto-rs
 
-Experimental, benchmark-driven cryptography research for HTTPS/TLS workloads,
-written in Rust.
+Cryptographic research and staging for
+**[rust-reality](https://github.com/jacek4yang/rust-reality)**.
 
-> **Status: experimental research code.**
-> Not audited. Not constant-time verified. Our SHA-256 now measures within
-> about 1% of ring and aws-lc-rs at 1 KiB and above, and HKDF-SHA256 is
-> within about 29% on the TLS-shaped workload, but none of that is a claim of
-> being faster: those are single-run numbers from a shared container, and
-> this project requires a dedicated machine and a measurement recorded
-> under `benchmarks/results/` before any performance claim.
+> **This is not a cryptography library you should use.**
+>
+> It is a temporary staging repository. Its purpose is to research, implement,
+> benchmark and harden the cryptographic primitives that rust-reality actually
+> performs, outside the production tree where experiments are cheap — and then
+> to have the successful parts **absorbed into rust-reality**, at which point
+> this repository is archived.
+>
+> Not audited. Not constant-time verified. Not a general-purpose library, not
+> a competitor to `ring`, `aws-lc-rs` or RustCrypto, and not something to
+> depend on. rust-reality's production build does not depend on it and is not
+> intended to.
 
-## Why
+## What it is for
 
-TLS is not slow because of one primitive: it is slow because of the *pipeline* -
-HKDF extract, HKDF expand, key initialisation, per-record AEAD setup, and the
-fixed overheads that dominate small records. This project exists to measure
-those costs honestly and to reduce them without ever changing the
-cryptographic construction.
+rust-reality is a VLESS + REALITY + Vision proxy whose cost is dominated by
+**session establishment on 1–2 vCPU virtualized Linux hosts**. Its crypto is
+not a generic TLS stack: it is a specific, measured set of operations at
+specific sizes, several of which run once per session and none of which look
+like a megabyte-throughput benchmark.
 
-The rules of the project:
+This repository exists to answer one question per primitive:
 
-1. **Correctness first.** Standardised constructions only. Every primitive is
-   tested against published known-answer vectors and differentially against
-   established implementations.
-2. **Measurements second.** No optimisation is merged before a benchmark
-   records the baseline.
-3. **Optimization third.** An optimisation that does not show up in a
-   measurement, or that regresses another measurement, is reverted.
-4. **Claims last.** Nothing is described as faster, constant-time, or safe
-   until the evidence is in the repository.
+> Can rust-reality own this implementation, and is doing so better than the
+> mature provider it uses today?
 
-## Current state
+"Better" means measured on rust-reality's shapes, on representative hardware,
+against the **incumbent** — not against a convenient baseline. The incumbents
+are strong and were selected on evidence:
 
-| Area | Status |
-| --- | --- |
-| Workspace, lint gates, quality scripts | done |
-| Portable SHA-256 | done (safe Rust, KAT + differential tested) |
-| Portable HMAC-SHA256 | done (RFC 4231 vectors) |
-| Portable HKDF-SHA256 | done (RFC 5869 vectors), plus a prepared-key expander for the TLS multi-label shape |
-| x86_64 feature detection (CPUID, cached, no_std) | done, cross-checked against `std::arch` |
-| AArch64 feature detection (feature-gated probe) | done |
-| Benchmark laboratory (Criterion) | done |
-| Differential tests vs RustCrypto / ring / aws-lc-rs | done |
-| x86_64 SHA-NI SHA-256 | done, selected at runtime, equivalence tested |
-| ChaCha20-Poly1305, AES-GCM, X25519 | benchmarks only, not implemented |
+| primitive | rust-reality's current provider | why it is there |
+| --- | --- | --- |
+| X25519 (per session, ×2) | `aws-lc-rs` | measured **−12.3% server CPU per session**; 2.41x on variable-base agreement |
+| AES-128/256-GCM, ChaCha20-Poly1305 | `ring` | faster than `aws-lc-rs` at every measured record size |
+| SHA-256/384, HMAC, HKDF | RustCrypto (`sha2`/`hmac`/`hkdf`) | on SHA-NI hardware `ring` is **9.8% slower per session**; RustCrypto wins |
+| Ed25519 | `ed25519-dalek` | the only `no_std`-clean option; `ring` is 23–40% slower |
+| ML-KEM-768 | `ml-kem` | out of scope; no measured headroom |
 
-See `PROJECT_STATUS.md` for the current handover note,
-`docs/ROADMAP.md` for what comes next, and `benchmarks/results/`
-for measurements.
+A replacement has to beat *those*. A primitive that loses stays delegated, and
+that is a successful outcome of the research, not a failure of it.
 
-## Where the numbers stand (2026-09-03, shared cloud container, AMD EPYC 9K65)
+## Where the work actually stands
 
-| benchmark | first portable baseline | today | best competitor in the same run |
-|---|---|---|---|
-| SHA-256, 0 B | 282.4 ns | 67.4 ns | aws-lc-rs 61.6 ns |
-| SHA-256, 64 KiB | 225.9 us | 36.0 us | aws-lc-rs 35.9 us |
-| HKDF extract + expand to 88 B | 4346 ns | 880.5 ns | RustCrypto hkdf 656.8 ns |
-| HKDF, four labels from one PRK | 1375 ns (per-label API) | 627.3 ns | RustCrypto hkdf 486.5 ns |
+Honest, and it matters more than the layering diagram:
 
-Five optimization steps got there, all recorded with their measurements -
-including two rejected variants - in `benchmarks/results/`.
+| primitive | implemented here | vs rust-reality's incumbent |
+| --- | --- | --- |
+| SHA-256 (portable + x86 SHA-NI) | yes | not yet measured against RustCrypto `sha2` **on the shapes and hardware rust-reality uses** |
+| HMAC-SHA256 | yes | not yet measured against the incumbent |
+| HKDF-SHA256 (+ prepared-key expander) | yes | this repository's own numbers put it **~29% slower than RustCrypto `hkdf`** on the TLS-shaped workload |
+| SHA-384 / SHA-512, HMAC over them | no | rust-reality uses them per session |
+| X25519, AES-GCM, ChaCha20-Poly1305, Ed25519, ML-KEM | benchmark harness only | — |
 
-## Repository layout
+The recorded numbers under `benchmarks/results/` were taken in a **shared
+cloud container**, which is not a measurement host. They are directional only.
+Nothing here is currently an integration candidate.
 
-```
-.
-├── Cargo.toml                # workspace manifest
-├── crates/
-│   ├── fastcrypto/           # public safe API + dispatch
-│   ├── fastcrypto-core/      # portable, no_std, allocation-free primitives
-│   ├── fastcrypto-x86/       # x86_64 backend: CPUID detection, future SIMD
-│   ├── fastcrypto-aarch64/   # AArch64 backend: feature probe, future SIMD
-│   └── fastcrypto-bench/     # benchmark and differential-test laboratory
-├── benchmarks/results/       # recorded measurements (Markdown)
-├── docs/                     # architecture, benchmarking, security model, roadmap
-├── fuzz/                     # cargo-fuzz targets (separate workspace)
-├── scripts/                  # quality gates
-└── PROJECT_STATUS.md
-```
+## Architecture, and what it is optimised for
 
-Layering is strict, and it is the point of the repository:
+Layering is strict, because the layering is the part most likely to survive
+into rust-reality:
 
 ```
-safe Rust public API   ->   fastcrypto
-                              |
-                        dispatch layer (backend selection)
-                              |
-              +---------------+---------------+
-              |                               |
-     portable backend                 architecture backends
-     fastcrypto-core              fastcrypto-x86 / fastcrypto-aarch64
-     (forbid unsafe_code)         (unsafe allowed, gated, documented)
+safe public API        ->  fastcrypto
+                             |
+                       dispatch (backend selection)
+                             |
+             +---------------+---------------+
+             |                               |
+    portable backend                architecture backends
+    fastcrypto-core             fastcrypto-x86 / fastcrypto-aarch64
+    (forbids unsafe_code)       (unsafe allowed, gated, documented)
 ```
+
+It is deliberately **not** optimised for external consumers. There is no
+plugin registry, no runtime provider selection, no SemVer promise and no
+stability guarantee — those would be abstraction tax for users who do not
+exist. It is optimised for: rigorous testing, honest benchmarking, security
+analysis, and clean extraction into rust-reality later.
+
+rust-reality enforces a `no_std + alloc` protocol core
+([ADR 0016](https://github.com/jacek4yang/rust-reality/blob/main/docs/adr/0016-protocol-core-is-no-std-ready-but-stays-in-place.md)),
+so `fastcrypto-core` is `no_std` and allocation-free, and anything `std`-only
+stays behind an adapter. That boundary is not decoration: it is what decided
+rust-reality's Ed25519 and SHA provider questions.
+
+## Layout
+
+```
+crates/fastcrypto/         safe public API + backend dispatch
+crates/fastcrypto-core/    portable, no_std, allocation-free, no unsafe
+crates/fastcrypto-x86/     x86_64: CPUID detection, SHA-NI backend
+crates/fastcrypto-aarch64/ AArch64: feature probe
+crates/fastcrypto-bench/   Criterion + differential tests vs ring/aws-lc-rs/RustCrypto
+benchmarks/results/        recorded measurements, with their environment
+docs/                      architecture, benchmarking, security model, roadmap
+fuzz/                      cargo-fuzz differential targets
+```
+
+## Working rules
+
+1. **Correctness first.** Standardised constructions only, published
+   known-answer vectors, and differential tests against established
+   implementations. No invented constructions, ever.
+2. **Measure before optimising**, and measure the shape rust-reality uses —
+   handshake-sized inputs, not megabyte throughput.
+3. **Compare against the incumbent.** Beating a slow baseline proves nothing.
+4. **Claims are specific.** "fastcrypto SHA-256 is X% faster at Y bytes on Z
+   CPU", never "fastcrypto is faster than ring".
+5. **Delegating is a valid result.** The goal is the best rust-reality, not
+   the most code written here.
 
 ## Quick start
 
 ```sh
-# quality gates (what CI runs)
-./scripts/check.sh
-
-# benchmark environment report - attach this to every recorded result
-cargo run --release --bin bench-env
-
-# baseline benchmarks
+./scripts/check.sh                         # the gates CI runs
+cargo run --release --bin bench-env        # environment report for any result
 cargo bench -p fastcrypto-bench --bench sha256
-cargo bench -p fastcrypto-bench --bench hkdf
-cargo bench -p fastcrypto-bench --bench aead
-cargo bench -p fastcrypto-bench --bench x25519
 ```
 
-## Using the library
+## Status and history
 
-```rust
-use fastcrypto::{Sha256, HkdfSha256, sha256};
+Per-primitive readiness lives in [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+Research state, decisions and rejected hypotheses live in this repository's
+GitHub issues. `docs/` holds the architecture, benchmarking method and
+security model.
 
-let digest = sha256(b"hello world");
+This repository was developed on CNB and migrated to GitHub with its full
+history at commit `5129598`; GitHub is now the only authoritative host.
 
-let mut h = Sha256::new();
-h.update(b"hello ");
-h.update(b"world");
-assert_eq!(h.finalize(), digest);
+## Retirement
 
-// TLS 1.3 style key schedule step
-let prk = HkdfSha256::new(b"salt", b"input key material");
-let mut okm = [0u8; 42];
-prk.expand_into(b"label", &mut okm).unwrap();
-```
-
-The API is allocation-free, `no_std`-capable
-(`default-features = false`), and safe end to end. Secret-carrying types
-zeroize on drop.
-
-## Documentation
-
-* `docs/ARCHITECTURE.md` - layering, crate responsibilities, dispatch design.
-* `docs/BENCHMARKING.md` - how to produce reproducible measurements.
-* `docs/SECURITY_MODEL.md` - threat model, unsafe policy, what is not yet
-  verified.
-* `docs/ROADMAP.md` - milestones and the order they are done in.
-* `SECURITY.md` - how to report a vulnerability in experimental code.
-
-## Scope
-
-This is an independent research project. It implements standardised primitives
-(FIPS 180-4, RFC 2104, RFC 5869 and friends) and optimises *implementations*
-only; it does not invent constructions, and it does not weaken cryptographic
-semantics to win a benchmark.
+This repository is finished when its production-relevant work has been
+migrated into rust-reality or deliberately delegated to mature providers,
+rust-reality no longer needs it to build, and the correctness, security and
+benchmark coverage that matters lives in rust-reality's own tree. At that
+point it is archived read-only — not deleted, because the rejected experiments
+are part of the evidence.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See `LICENSE`.
-
+Apache-2.0. See `LICENSE`.
