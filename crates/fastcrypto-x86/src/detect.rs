@@ -23,6 +23,8 @@ const BIT_AVX2: u32 = 1 << 3;
 const BIT_VAES: u32 = 1 << 4;
 const BIT_VPCLMULQDQ: u32 = 1 << 5;
 const BIT_AVX512F: u32 = 1 << 6;
+const BIT_BMI2: u32 = 1 << 7;
+const BIT_ADX: u32 = 1 << 8;
 
 // CPUID leaf 1, ECX.
 const LEAF1_ECX_PCLMULQDQ: u32 = 1 << 19;
@@ -31,7 +33,9 @@ const LEAF1_ECX_OSXSAVE: u32 = 1 << 27;
 
 // CPUID leaf 7 sub-leaf 0, EBX.
 const LEAF7_EBX_AVX2: u32 = 1 << 5;
+const LEAF7_EBX_BMI2: u32 = 1 << 8;
 const LEAF7_EBX_AVX512F: u32 = 1 << 16;
+const LEAF7_EBX_ADX: u32 = 1 << 19;
 const LEAF7_EBX_SHA: u32 = 1 << 29;
 
 // CPUID leaf 7 sub-leaf 0, ECX.
@@ -86,6 +90,14 @@ impl Features {
         }
         if leaf7.ebx & LEAF7_EBX_SHA != 0 {
             bits |= BIT_SHA_NI;
+        }
+        // BMI2 and ADX are general-purpose integer extensions: they use no
+        // extended register state, so unlike AVX they need no XCR0 agreement.
+        if leaf7.ebx & LEAF7_EBX_BMI2 != 0 {
+            bits |= BIT_BMI2;
+        }
+        if leaf7.ebx & LEAF7_EBX_ADX != 0 {
+            bits |= BIT_ADX;
         }
         if leaf7.ebx & LEAF7_EBX_AVX2 != 0 && ymm_enabled {
             bits |= BIT_AVX2;
@@ -163,6 +175,18 @@ impl Features {
     pub const fn avx512f(&self) -> bool {
         self.bits & BIT_AVX512F != 0
     }
+
+    /// BMI2 (`MULX` and the flag-free shifts).
+    #[must_use]
+    pub const fn bmi2(&self) -> bool {
+        self.bits & BIT_BMI2 != 0
+    }
+
+    /// ADX (`ADCX`/`ADOX`, two independent carry chains).
+    #[must_use]
+    pub const fn adx(&self) -> bool {
+        self.bits & BIT_ADX != 0
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +213,8 @@ mod tests {
             std::arch::is_x86_feature_detected!("vpclmulqdq")
         );
         assert_eq!(f.avx512f(), std::arch::is_x86_feature_detected!("avx512f"));
+        assert_eq!(f.bmi2(), std::arch::is_x86_feature_detected!("bmi2"));
+        assert_eq!(f.adx(), std::arch::is_x86_feature_detected!("adx"));
     }
 
     #[test]

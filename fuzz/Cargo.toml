@@ -14,6 +14,7 @@ fastcrypto = { path = "../crates/fastcrypto" }
 sha2 = "0.11"
 hmac = "0.13"
 hkdf = "0.13"
+x25519-dalek = { version = "3.0", features = ["static_secrets"] }
 
 # fastcrypto-fuzz is a separate workspace: it must never be built by the main
 # workspace, and it must never become a dependency of the library.
@@ -29,6 +30,13 @@ bench = false
 [[bin]]
 name = "hkdf_sha256"
 path = "fuzz_targets/hkdf_sha256.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "x25519"
+path = "fuzz_targets/x25519.rs"
 test = false
 doc = false
 bench = false
