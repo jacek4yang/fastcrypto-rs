@@ -160,6 +160,51 @@ fn public_key(c: &mut criterion::Criterion) {
     group.finish();
 }
 
+/// The two reference implementations, so the incumbent is never compared only
+/// against us.
+///
+/// Extracted from [`ephemeral_session`] because the arms that decide the
+/// migration should be readable without scrolling past the ones that do not.
+fn reference_arms(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    peer_pk: &[u8; 32],
+) {
+    let peer_pk = *peer_pk;
+    group.bench_function("ring", |b| {
+        let ring_rng = ring::rand::SystemRandom::new();
+        let mut out = [0u8; 32];
+        b.iter(|| {
+            let private =
+                ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &ring_rng)
+                    .unwrap();
+            let public = private.compute_public_key().unwrap();
+            black_box(public.as_ref()[0]);
+            black_box(
+                ring::agreement::agree_ephemeral(
+                    private,
+                    &ring::agreement::UnparsedPublicKey::new(&ring::agreement::X25519, &peer_pk),
+                    |raw| {
+                        out.copy_from_slice(raw);
+                        out
+                    },
+                )
+                .unwrap(),
+            )
+        });
+    });
+
+    // x25519-dalek's `EphemeralSecret::random` needs its own RNG feature; a
+    // fixed scalar is equivalent arithmetic, so this arm measures the curve
+    // work without a random draw and is *favourable* to dalek by that much.
+    group.bench_function("x25519-dalek/without-rng", |b| {
+        b.iter(|| {
+            let secret = StaticSecret::from(common::key32(3));
+            black_box(PublicKey::from(&secret).to_bytes()[0]);
+            black_box(secret.diffie_hellman(&PublicKey::from(peer_pk)).to_bytes())
+        });
+    });
+}
+
 /// The whole TLS ephemeral shape: one key pair, its public share, one
 /// agreement — what rust-reality performs once per session.
 ///
@@ -210,6 +255,39 @@ fn ephemeral_session(c: &mut criterion::Criterion) {
         });
     });
 
+    // The incumbent's X25519, seeded from `getrandom` instead of AWS-LC's DRBG.
+    // Together with `aws-lc-rs` above and `fastcrypto/getrandom` below, this
+    // separates the two things the rust-reality migration changes at once: the
+    // X25519 implementation and the entropy source. Without it, a whole-product
+    // difference has two candidate causes and no way to choose between them.
+    group.bench_function("aws-lc-rs/getrandom-seeded", |b| {
+        b.iter(|| {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).unwrap();
+            let private = aws_lc_rs::agreement::PrivateKey::from_private_key(
+                &aws_lc_rs::agreement::X25519,
+                &seed,
+            )
+            .unwrap();
+            let public = private.compute_public_key().unwrap();
+            black_box(public.as_ref()[0]);
+            aws_lc_rs::agreement::agree(
+                &private,
+                aws_lc_rs::agreement::UnparsedPublicKey::new(
+                    &aws_lc_rs::agreement::X25519,
+                    &peer_pk,
+                ),
+                (),
+                |raw| {
+                    out.copy_from_slice(raw);
+                    Ok::<(), ()>(())
+                },
+            )
+            .unwrap();
+            black_box(out)
+        });
+    });
+
     // Holds the entropy source fixed at the incumbent's, so the difference is
     // the X25519 API and nothing else.
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -238,52 +316,33 @@ fn ephemeral_session(c: &mut criterion::Criterion) {
         });
     });
 
-    // The entropy draw on its own, so the two arms above can be read apart.
-    group.bench_function("entropy/aws-lc-rs-drbg-32B", |b| {
+    reference_arms(&mut group, &peer_pk);
+
+    group.finish();
+}
+
+/// The 32-byte entropy draw on its own, priced so the ephemeral-session arms
+/// can be read apart rather than attributed by argument.
+///
+/// One is AWS-LC's internal DRBG, which the incumbent uses whatever is handed
+/// to it. The other is `getrandom::fill`, which rust-reality's candidate calls
+/// and which on a kernel carrying the vDSO entry point never enters the kernel.
+fn entropy_draw(c: &mut criterion::Criterion) {
+    let mut group = c.benchmark_group("x25519/entropy-draw");
+
+    group.bench_function("aws-lc-rs-drbg-32B", |b| {
         b.iter(|| {
             let mut seed = [0u8; 32];
             aws_lc_rs::rand::fill(&mut seed).unwrap();
             black_box(seed[0])
         });
     });
-    group.bench_function("entropy/getrandom-32B", |b| {
+
+    group.bench_function("getrandom-32B", |b| {
         b.iter(|| {
             let mut seed = [0u8; 32];
             getrandom::fill(&mut seed).unwrap();
             black_box(seed[0])
-        });
-    });
-
-    group.bench_function("ring", |b| {
-        let ring_rng = ring::rand::SystemRandom::new();
-        b.iter(|| {
-            let private =
-                ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &ring_rng)
-                    .unwrap();
-            let public = private.compute_public_key().unwrap();
-            black_box(public.as_ref()[0]);
-            black_box(
-                ring::agreement::agree_ephemeral(
-                    private,
-                    &ring::agreement::UnparsedPublicKey::new(&ring::agreement::X25519, &peer_pk),
-                    |raw| {
-                        out.copy_from_slice(raw);
-                        out
-                    },
-                )
-                .unwrap(),
-            )
-        });
-    });
-
-    // x25519-dalek's `EphemeralSecret::random` needs its own RNG feature; a
-    // fixed scalar is equivalent arithmetic, so this arm measures the curve
-    // work without a random draw and is *favourable* to dalek by that much.
-    group.bench_function("x25519-dalek/without-rng", |b| {
-        b.iter(|| {
-            let secret = StaticSecret::from(common::key32(3));
-            black_box(PublicKey::from(&secret).to_bytes()[0]);
-            black_box(secret.diffie_hellman(&PublicKey::from(peer_pk)).to_bytes())
         });
     });
 
@@ -293,6 +352,6 @@ fn ephemeral_session(c: &mut criterion::Criterion) {
 criterion_group! {
     name = benches;
     config = common::criterion();
-    targets = fixed_key, public_key, ephemeral_session
+    targets = fixed_key, public_key, ephemeral_session, entropy_draw
 }
 criterion_main!(benches);
