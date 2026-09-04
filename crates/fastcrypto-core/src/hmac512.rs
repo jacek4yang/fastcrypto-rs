@@ -24,6 +24,7 @@ const PREFIX_LEN: u64 = BLOCK_LEN as u64;
 ///
 /// Parameterised by initial state and tag length, which is the only difference
 /// between HMAC-SHA512 and HMAC-SHA384.
+#[derive(Clone)]
 struct Core {
     /// Live hasher over the ipad key block plus the message.
     inner: Sha512Core,
@@ -105,6 +106,11 @@ impl Core {
 macro_rules! hmac_type {
     ($name:ident, $tag:expr, $iv:expr, $hash:path, $doc:literal) => {
         #[doc = $doc]
+        ///
+        /// Cloning duplicates the installed key state and the message absorbed
+        /// so far, which is what makes a keyed instance usable as a template.
+        /// Each clone clears its own key state on drop.
+        #[derive(Clone)]
         pub struct $name(Core);
 
         impl core::fmt::Debug for $name {
@@ -198,6 +204,27 @@ pub fn hmac_sha384(key: &[u8], message: &[u8]) -> [u8; SHA384_DIGEST_LEN] {
 
 #[cfg(test)]
 mod tests {
+    /// Both SHA-512-family templates clone the same way HMAC-SHA256 does:
+    /// rust-reality keys HMAC-SHA384 once per handshake for the Finished
+    /// message and HMAC-SHA512 once per session for the certificate binding.
+    #[test]
+    fn keyed_templates_clone_independently() {
+        let template384 = HmacSha384::new(b"key");
+        let mut a = template384.clone();
+        let mut b = template384.clone();
+        a.update(b"alpha");
+        b.update(b"beta");
+        assert_eq!(a.finalize(), hmac_sha384(b"key", b"alpha"));
+        assert_eq!(b.finalize(), hmac_sha384(b"key", b"beta"));
+
+        let template512 = HmacSha512::new(b"key");
+        let mut c = template512.clone();
+        c.update(b"gamma");
+        assert_eq!(c.finalize(), hmac_sha512(b"key", b"gamma"));
+        // The template itself absorbed nothing and still tags the empty message.
+        assert_eq!(template512.finalize(), hmac_sha512(b"key", b""));
+    }
+
     use alloc::string::String;
     use alloc::vec;
 

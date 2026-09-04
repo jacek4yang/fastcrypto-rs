@@ -31,6 +31,13 @@ const PREFIX_LEN: u64 = BLOCK_LEN as u64;
 /// let tag = fastcrypto_core::hmac_sha256(b"key", b"the quick brown fox");
 /// assert!(h.verify(&tag));
 /// ```
+/// Cloning duplicates the installed key state — the ipad and opad mid-stream
+/// states — and the message absorbed so far. That is deliberate and is the
+/// reason this derives `Clone`: a keyed HMAC is the cheap-to-copy form of a
+/// key schedule, and rust-reality's NXR authentication clones one shared
+/// template per request instead of re-running the key schedule. Each clone
+/// carries its own `Drop`, so every copy clears its own key state.
+#[derive(Clone)]
 pub struct HmacSha256 {
     /// Live hasher over the ipad-prefixed key block plus the message.
     inner: Sha256,
@@ -173,6 +180,60 @@ pub fn hmac_sha256_verify(key: &[u8], data: &[u8], tag: &[u8; TAG_LEN]) -> bool 
 
 #[cfg(test)]
 mod tests {
+    /// The template shape rust-reality's NXR authentication depends on: key
+    /// once, clone per message, and every clone agrees with a freshly keyed
+    /// instance.
+    #[test]
+    fn a_clone_of_a_keyed_template_authenticates_identically() {
+        let template = HmacSha256::new(b"an independent 32-byte NXR key..");
+        for message in [
+            b"".as_slice(),
+            b"one",
+            b"a longer message that spans past a block boundary because it is quite long indeed",
+        ] {
+            let mut cloned = template.clone();
+            cloned.update(message);
+            let expected = hmac_sha256(b"an independent 32-byte NXR key..", message);
+            assert_eq!(
+                cloned.finalize(),
+                expected,
+                "clone disagreed on {message:?}"
+            );
+            assert!(cloned.verify(&expected));
+        }
+    }
+
+    /// A clone must not observe what the original absorbs afterwards, or a
+    /// shared template would leak one request's message into the next.
+    #[test]
+    fn a_clone_is_independent_of_the_original() {
+        let mut original = HmacSha256::new(b"key");
+        let mut cloned = original.clone();
+        original.update(b"only the original sees this");
+        cloned.update(b"only the clone sees this");
+        assert_eq!(
+            cloned.finalize(),
+            hmac_sha256(b"key", b"only the clone sees this")
+        );
+        assert_eq!(
+            original.finalize(),
+            hmac_sha256(b"key", b"only the original sees this")
+        );
+    }
+
+    /// Cloning mid-message copies the absorbed prefix too.
+    #[test]
+    fn a_clone_carries_the_message_absorbed_so_far() {
+        let mut original = HmacSha256::new(b"key");
+        original.update(b"shared prefix|");
+        let mut cloned = original.clone();
+        cloned.update(b"tail");
+        assert_eq!(
+            cloned.finalize(),
+            hmac_sha256(b"key", b"shared prefix|tail")
+        );
+    }
+
     use alloc::string::String;
     use alloc::vec::Vec;
 

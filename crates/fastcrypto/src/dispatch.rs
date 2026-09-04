@@ -94,6 +94,10 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 /// HMAC-SHA256 that dispatches to the best available backend.
+///
+/// Cloning duplicates the installed key state, so a keyed instance can be held
+/// as a template and copied per message rather than re-keyed.
+#[derive(Clone)]
 pub struct HmacSha256(fastcrypto_core::HmacSha256);
 
 impl core::fmt::Debug for HmacSha256 {
