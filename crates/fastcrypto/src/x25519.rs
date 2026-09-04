@@ -14,9 +14,20 @@
 //!
 //! # Entropy
 //!
-//! Nothing here draws from the operating system. An [`EphemeralSecret`] is
-//! built from 32 caller-supplied bytes, so the platform layer owns entropy and
-//! this module stays `no_std`, deterministic under test, and directly fuzzable.
+//! Nothing here draws from the operating system: the platform layer owns
+//! entropy, so this module stays `no_std`, deterministic under test, and
+//! directly fuzzable. There are two ways to hand it over, and the difference
+//! is secret handling rather than convenience.
+//!
+//! [`EphemeralSecret::from_entropy`] passes the key's own storage to a filler
+//! the caller supplies, so the scalar is written where it will live and the
+//! caller never holds a second copy of it. That is the one to use in
+//! production; `getrandom::fill` has the required signature already.
+//!
+//! [`EphemeralSecret::from_bytes`] takes the 32 bytes by value and is for
+//! tests, fuzzing and known-answer vectors, where the input has to be chosen
+//! rather than drawn. Its bytes are `Copy`, so a caller that passes a secret
+//! through it keeps a copy that this module cannot clear.
 //!
 //! # Non-contributory shares
 //!
@@ -145,8 +156,38 @@ pub struct EphemeralSecret {
 }
 
 impl EphemeralSecret {
-    /// Builds one ephemeral key pair from 32 bytes of caller-supplied
-    /// randomness.
+    /// Builds one ephemeral key pair, filling the key's own storage.
+    ///
+    /// `fill` is handed the scalar's final location, so the secret is never
+    /// written anywhere else and the caller is not left holding a copy to
+    /// clear. In rust-reality that argument is `getrandom::fill`, whose
+    /// signature this is shaped for.
+    ///
+    /// What this does *not* claim: Rust makes no promise that a returned value
+    /// is not moved, so this removes the caller's copy rather than proving the
+    /// bytes occupy exactly one address for their whole life. If `fill` fails,
+    /// the partially written key is dropped, and dropping zeroizes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `fill` returned, unchanged.
+    pub fn from_entropy<E>(
+        fill: impl FnOnce(&mut [u8; KEY_LEN]) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let mut secret = Self {
+            secret: [0_u8; KEY_LEN],
+            public_key: [0_u8; KEY_LEN],
+        };
+        fill(&mut secret.secret)?;
+        backend::x25519_base(&mut secret.public_key, &secret.secret);
+        Ok(secret)
+    }
+
+    /// Builds one ephemeral key pair from 32 bytes the caller already has.
+    ///
+    /// For tests, fuzzing and known-answer vectors. `[u8; 32]` is `Copy`, so a
+    /// production caller reaching for this keeps a copy of the scalar that this
+    /// type cannot clear; use [`Self::from_entropy`] there instead.
     ///
     /// The caller is responsible for those bytes coming from a cryptographic
     /// random source and for never reusing them.
@@ -227,7 +268,7 @@ pub fn backend_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{EphemeralSecret, SharedSecret, StaticSecret, is_zero};
+    use super::{EphemeralSecret, KEY_LEN, SharedSecret, StaticSecret, is_zero};
 
     use alloc::format;
 
@@ -283,6 +324,49 @@ mod tests {
             let ephemeral = EphemeralSecret::from_bytes([0x11; 32]);
             assert!(ephemeral.agree(&hex32(share)).is_none());
         }
+    }
+
+    #[test]
+    fn from_entropy_and_from_bytes_build_the_same_key() {
+        let scalar = [0x5c_u8; KEY_LEN];
+        let filled = EphemeralSecret::from_entropy(|buffer| {
+            buffer.copy_from_slice(&scalar);
+            Ok::<(), ()>(())
+        })
+        .expect("a filler that succeeds must produce a key");
+        let literal = EphemeralSecret::from_bytes(scalar);
+        assert_eq!(filled.public_key(), literal.public_key());
+
+        let peer = EphemeralSecret::from_bytes([0x27_u8; KEY_LEN]);
+        let peer_public = *peer.public_key();
+        assert_eq!(
+            filled.agree(&peer_public).map(|s| *s.as_bytes()),
+            literal.agree(&peer_public).map(|s| *s.as_bytes()),
+        );
+    }
+
+    #[test]
+    fn from_entropy_returns_the_fillers_error_unchanged() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct NoEntropy;
+        let outcome = EphemeralSecret::from_entropy(|_| Err(NoEntropy));
+        assert_eq!(outcome.err(), Some(NoEntropy));
+    }
+
+    /// The filler must be handed the key's own storage, not a scratch buffer
+    /// that is copied afterwards — that is the whole reason this constructor
+    /// exists.
+    #[test]
+    fn from_entropy_fills_the_storage_the_public_key_is_derived_from() {
+        let mut observed = [0_u8; KEY_LEN];
+        let key = EphemeralSecret::from_entropy(|buffer| {
+            buffer.copy_from_slice(&[0x3a_u8; KEY_LEN]);
+            observed.copy_from_slice(buffer);
+            Ok::<(), ()>(())
+        })
+        .expect("a filler that succeeds must produce a key");
+        let expected = EphemeralSecret::from_bytes(observed);
+        assert_eq!(key.public_key(), expected.public_key());
     }
 
     #[test]
