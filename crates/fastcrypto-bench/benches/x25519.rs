@@ -164,10 +164,18 @@ fn public_key(c: &mut criterion::Criterion) {
 /// agreement — what rust-reality performs once per session.
 ///
 /// This is the group that decides, because it is the only one where both sides
-/// pay for the same work. Each includes its own system randomness: the
-/// incumbent draws from AWS-LC's internal DRBG regardless of what is passed to
-/// it, and fastcrypto takes 32 caller-supplied bytes, so the caller's draw is
-/// part of its cost and is included here.
+/// pay for the same work: allocation, object construction and the caller's
+/// random draw, not only the scalar multiplication the `fixed-key` group
+/// isolates.
+///
+/// **The entropy source is part of the shape, so there are two fastcrypto
+/// arms.** The incumbent draws from AWS-LC's internal DRBG no matter what is
+/// passed to it. rust-reality's candidate calls `getrandom::fill`, which on a
+/// kernel with the vDSO entry point never enters the kernel. Measuring
+/// fastcrypto against AWS-LC's DRBG isolates the X25519 API — useful, and not
+/// what ships; measuring it against `getrandom` is the combination the server
+/// actually compiles. Reporting only the first would attribute a whole-product
+/// difference to the wrong component.
 fn ephemeral_session(c: &mut criterion::Criterion) {
     let peer_sk: [u8; 32] = common::key32(2);
     let peer_pk: [u8; 32] = PublicKey::from(&StaticSecret::from(peer_sk)).to_bytes();
@@ -202,8 +210,10 @@ fn ephemeral_session(c: &mut criterion::Criterion) {
         });
     });
 
+    // Holds the entropy source fixed at the incumbent's, so the difference is
+    // the X25519 API and nothing else.
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    group.bench_function("fastcrypto", |b| {
+    group.bench_function("fastcrypto/aws-lc-rng", |b| {
         b.iter(|| {
             let mut seed = [0u8; 32];
             aws_lc_rs::rand::fill(&mut seed).unwrap();
@@ -211,6 +221,36 @@ fn ephemeral_session(c: &mut criterion::Criterion) {
             black_box(secret.public_key()[0]);
             let shared = secret.agree(&peer_pk).unwrap();
             black_box(*shared.as_bytes())
+        });
+    });
+
+    // Exactly what `EphemeralX25519Key::generate` compiles to in rust-reality's
+    // candidate: `getrandom::fill` into a 32-byte seed, then the agreement.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    group.bench_function("fastcrypto/getrandom", |b| {
+        b.iter(|| {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).unwrap();
+            let secret = fastcrypto::x25519::EphemeralSecret::from_bytes(seed);
+            black_box(secret.public_key()[0]);
+            let shared = secret.agree(&peer_pk).unwrap();
+            black_box(*shared.as_bytes())
+        });
+    });
+
+    // The entropy draw on its own, so the two arms above can be read apart.
+    group.bench_function("entropy/aws-lc-rs-drbg-32B", |b| {
+        b.iter(|| {
+            let mut seed = [0u8; 32];
+            aws_lc_rs::rand::fill(&mut seed).unwrap();
+            black_box(seed[0])
+        });
+    });
+    group.bench_function("entropy/getrandom-32B", |b| {
+        b.iter(|| {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).unwrap();
+            black_box(seed[0])
         });
     });
 
